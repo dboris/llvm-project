@@ -1718,6 +1718,15 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
       Offset = CGF.Builder.CreateZExtOrBitCast(Offset, PtrDiffTy);
     return Offset;
   }
+  /// Hook: append the word(s) emitted between `super_class` and `name` in the
+  /// class/metaclass head.  gnustep-2.0 inserts NONE (the head is isa,
+  /// super_class, name, ...), so this default is empty and the emitted layout
+  /// is byte-identical.  The gnustep-3.0 variant (CGObjCGNUstep3) overrides it
+  /// to insert the reserved words of Swift's 5-word class head.  Harmony; see
+  /// docs/reports/spike-05.
+  virtual void EmitClassHeadReservedWords(ConstantAggregateBuilderBase &fields) {
+  }
+
   void GenerateClass(const ObjCImplementationDecl *OID) override {
     ASTContext &Context = CGM.getContext();
     bool IsCOFF = CGM.getTriple().isOSBinFormatCOFF();
@@ -1734,6 +1743,8 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
     metaclassFields.addNullPointer(PtrTy);
     // struct objc_class *super_class;
     metaclassFields.addNullPointer(PtrTy);
+    // gnustep-3.0: insert the reserved words of Swift's 5-word head here.
+    EmitClassHeadReservedWords(metaclassFields);
     // const char *name;
     metaclassFields.add(classNameConstant);
     // long version;
@@ -1813,6 +1824,8 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
         classFields.addNullPointer(PtrTy);
     } else
       classFields.addNullPointer(PtrTy);
+    // gnustep-3.0: insert the reserved words of Swift's 5-word head here.
+    EmitClassHeadReservedWords(classFields);
     // const char *name;
     classFields.add(classNameConstant);
     // long version;
@@ -2161,6 +2174,37 @@ const char *const CGObjCGNUstep2::PECOFFSectionsBaseNames[8] =
 ".objcrt$PCR",
 ".objcrt$CAL",
 ".objcrt$STR"
+};
+
+/// gnustep-3.0 runtime (Harmony).  Identical to gnustep-2.0 (CGObjCGNUstep2)
+/// EXCEPT the emitted class/metaclass leads with Swift's 5-word class head --
+/// isa, super_class, reserved0, reserved1, data -- instead of
+/// isa, super_class, name, ...  This makes an Objective-C class's first five
+/// words match Swift's TargetAnyClassMetadataObjCInterop contract, so a Swift
+/// class is a valid ObjC class with no metadata reshape.  It is a NEW ABI
+/// variant -- gnustep-2.0 is untouched (WinCatalyst depends on it) -- and
+/// mirrors libobjc2's `struct objc_class_gsv3` (branch harmony/gnustep-3.0).
+/// See docs/decisions/0003 + docs/reports/spike-05.
+///
+/// Slice 3 scope is the HEAD ONLY: the reserved words are emitted null.  Wiring
+/// the dispatch table / tagged rodata pointer into them, the runtime-ABI version
+/// the loader branches on to recognise a 3.0 head, and DTABLE_OFFSET are settled
+/// in slice 4 (coordinated with the libobjc2 runtime reshape).
+class CGObjCGNUstep3 : public CGObjCGNUstep2 {
+  /// Emit words [2..4] of Swift's 5-word head, between super_class and name:
+  /// reserved0 / reserved1 (== Swift CacheData[0..1]; runtime-owned, the future
+  /// home of the dispatch table / method cache) and data (== Swift Data; a
+  /// tagged class-data pointer whose low bit Swift reserves to mark a Swift
+  /// class).  All null until slice 4 wires them; null keeps the low bit clear,
+  /// i.e. "not a Swift class, no data yet".
+  void EmitClassHeadReservedWords(ConstantAggregateBuilderBase &fields) override {
+    fields.addNullPointer(PtrTy);  // [2] reserved0 (Swift CacheData[0])
+    fields.addNullPointer(PtrTy);  // [3] reserved1 (Swift CacheData[1])
+    fields.addNullPointer(PtrTy);  // [4] data (tagged; null until rodata wired)
+  }
+
+public:
+  CGObjCGNUstep3(CodeGenModule &Mod) : CGObjCGNUstep2(Mod) {}
 };
 
 /// Support for the ObjFW runtime.
@@ -4437,6 +4481,9 @@ clang::CodeGen::CreateGNUObjCRuntime(CodeGenModule &CGM) {
   auto Runtime = CGM.getLangOpts().ObjCRuntime;
   switch (Runtime.getKind()) {
   case ObjCRuntime::GNUstep:
+    // Harmony: gnustep-3.0 emits Swift's 5-word class head (spike-05 slice 3).
+    if (Runtime.getVersion() >= VersionTuple(3, 0))
+      return new CGObjCGNUstep3(CGM);
     if (Runtime.getVersion() >= VersionTuple(2, 0))
       return new CGObjCGNUstep2(CGM);
     return new CGObjCGNUstep(CGM);
