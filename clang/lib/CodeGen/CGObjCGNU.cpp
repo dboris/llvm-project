@@ -1726,6 +1726,17 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
   /// docs/reports/spike-05.
   virtual void EmitClassHeadReservedWords(ConstantAggregateBuilderBase &fields) {
   }
+  /// Hook: the metaclass symbol's linkage.  gnustep-2.0 keeps it
+  /// TU-internal (nothing references a metaclass cross-TU; the runtime
+  /// reaches it through class->isa), and on ELF even the gnustep-3.0
+  /// Swift aliases can .set a global name onto a local definition.  COFF
+  /// /alternatename cannot target a local, and Swift-emitted code
+  /// references OBJC_METACLASS_$_X cross-image (superrefs + metaclass isa
+  /// chains -- the symbol is public on Darwin/objc4), so the gnustep-3.0
+  /// variant makes it external there.  Harmony W3; see spike-18.
+  virtual llvm::GlobalValue::LinkageTypes MetaclassLinkage() const {
+    return llvm::GlobalValue::InternalLinkage;
+  }
 
   void GenerateClass(const ObjCImplementationDecl *OID) override {
     ASTContext &Context = CGM.getContext();
@@ -1791,7 +1802,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
 
     auto *metaclass = metaclassFields.finishAndCreateGlobal(
         ManglePublicSymbol("OBJC_METACLASS_") + className,
-        CGM.getPointerAlign());
+        CGM.getPointerAlign(), /*constant=*/false, MetaclassLinkage());
 
     auto classFields = builder.beginStruct();
     // struct objc_class *isa;
@@ -2201,6 +2212,15 @@ class CGObjCGNUstep3 : public CGObjCGNUstep2 {
     fields.addNullPointer(PtrTy);  // [2] reserved0 (Swift CacheData[0])
     fields.addNullPointer(PtrTy);  // [3] reserved1 (Swift CacheData[1])
     fields.addNullPointer(PtrTy);  // [4] data (tagged; null until rodata wired)
+  }
+
+  /// HARMONY (W3): see the base hook -- COFF needs the objc4-public
+  /// metaclass symbol for Swift's cross-image superrefs; ELF emission is
+  /// unchanged (the .set aliases reach the local definition there).
+  llvm::GlobalValue::LinkageTypes MetaclassLinkage() const override {
+    return CGM.getTriple().isOSBinFormatCOFF()
+               ? llvm::GlobalValue::ExternalLinkage
+               : llvm::GlobalValue::InternalLinkage;
   }
 
 public:
