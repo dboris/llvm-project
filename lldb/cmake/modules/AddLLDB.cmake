@@ -192,7 +192,15 @@ function(add_properties_for_swift_modules target reldir)
     elseif (CMAKE_SYSTEM_NAME MATCHES "Linux|Android|OpenBSD|FreeBSD")
       string(REGEX MATCH "^[^-]*" arch ${LLVM_TARGET_TRIPLE})
       string(TOLOWER ${CMAKE_SYSTEM_NAME} platform)
-      target_link_libraries(${target} PRIVATE swiftCore-${platform}-${arch})
+      # Harmony (spike-21): lldb is a HOST-side tool -- bind the host
+      # stdlib named by LLDB_SWIFT_LIBS, not the just-built core exported
+      # through Swift_DIR.  Upstream the two are the same library; on the
+      # Harmony stack the just-built core is the INTEROP stdlib, whose
+      # mangling diverges from the host-compiled swiftCompilerModules
+      # (Array._allocateBufferUninitialized returns _ArrayBuffer there vs
+      # _ContiguousArrayBuffer in the host world) and whose swiftrt
+      # expects the gnustep objc sections liblldb does not carry.
+      target_link_libraries(${target} PRIVATE "${LLDB_SWIFT_LIBS}/${platform}/libswiftCore.so")
       set(SWIFT_BUILD_RPATH "${LLDB_SWIFT_LIBS}/${platform}")
       set(SWIFT_INSTALL_RPATH "$ORIGIN/${reldir}lib/swift/${platform}")
       set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "${SWIFT_BUILD_RPATH}")
