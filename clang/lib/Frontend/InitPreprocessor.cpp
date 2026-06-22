@@ -977,7 +977,19 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
       // Don't rely on the tuple argument, because we can be asked to target
       // later ABIs than we actually support, so clamp these values to those
       // currently supported
-      if (version >= VersionTuple(2, 0))
+      if (version >= VersionTuple(3, 0)) {
+        // Harmony: gnustep-3.0 has its own codegen (CGObjCGNUstep3, the Swift-
+        // compatible 5-word class head) selected at this same >= 3.0 threshold in
+        // CreateGNUObjCRuntime (CGObjCGNU.cpp). Report ABI 30 -- upstream clamped
+        // every version >= 2.0 to "20" because its codegen stopped at 2.0, which
+        // left the preprocessor lying about the 3.0 ABI the fork actually emits.
+        // Also define the companion __GNUSTEP_RUNTIME_ABI_30__ that libobjc2's
+        // <objc/runtime.h>/<objc/class.h> key on for the 3.0 struct layout +
+        // Apple-compatible (signed char) BOOL, so consumers no longer have to pass
+        // -D__GNUSTEP_RUNTIME_ABI_30__ by hand to match the runtime's @encode.
+        Builder.defineMacro("__OBJC_GNUSTEP_RUNTIME_ABI__", "30");
+        Builder.defineMacro("__GNUSTEP_RUNTIME_ABI_30__");
+      } else if (version >= VersionTuple(2, 0))
         Builder.defineMacro("__OBJC_GNUSTEP_RUNTIME_ABI__", "20");
       else
         Builder.defineMacro(
