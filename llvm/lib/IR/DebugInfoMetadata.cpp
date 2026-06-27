@@ -982,7 +982,12 @@ uint32_t DIDerivedType::getVBPtrOffset() const {
 }
 Constant *DIDerivedType::getStorageOffsetInBits() const {
   assert(getTag() == dwarf::DW_TAG_member && isBitField());
-  if (auto *C = cast_or_null<ConstantAsMetadata>(getExtraData()))
+  // ExtraData is overloaded: for a bit-field member it is the storage-offset
+  // ConstantAsMetadata, but for an Objective-C ivar it is the backing
+  // DIObjCProperty (see getObjCProperty()). An ObjC bit-field ivar that also
+  // backs a property therefore stores the property here, not a constant, so
+  // tolerate a non-constant ExtraData rather than asserting (cast_or_null).
+  if (auto *C = dyn_cast_or_null<ConstantAsMetadata>(getExtraData()))
     return C->getValue();
   return nullptr;
 }
