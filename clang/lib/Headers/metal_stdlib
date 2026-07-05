@@ -1,0 +1,24 @@
+// WinCatalyst Metal Shading Language stdlib subset (Phase 3 slice 2).
+#ifndef __WC_METAL_STDLIB
+#define __WC_METAL_STDLIB
+
+namespace metal {
+
+typedef unsigned char uchar;
+typedef unsigned short ushort;
+typedef unsigned int uint;
+typedef unsigned long ulong;
+
+typedef __attribute__((__ext_vector_type__(2))) float float2;
+typedef __attribute__((__ext_vector_type__(3))) float float3;
+typedef __attribute__((__ext_vector_type__(4))) float float4;
+typedef __attribute__((__ext_vector_type__(2))) int int2;
+typedef __attribute__((__ext_vector_type__(3))) int int3;
+typedef __attribute__((__ext_vector_type__(4))) int int4;
+typedef __attribute__((__ext_vector_type__(2))) uint uint2;
+typedef __attribute__((__ext_vector_type__(3))) uint uint3;
+typedef __attribute__((__ext_vector_type__(4))) uint uint4;
+
+} // namespace metal
+
+#endif

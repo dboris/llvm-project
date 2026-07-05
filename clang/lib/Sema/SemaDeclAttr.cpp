@@ -3952,6 +3952,15 @@ static void handleInitPriorityAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   D->addAttr(::new (S.Context) InitPriorityAttr(S.Context, AL, prioritynum));
 }
 
+static void handleMetalBufferBindingAttr(Sema &S, Decl *D,
+                                         const ParsedAttr &AL) {
+  uint32_t Index;
+  if (!S.checkUInt32Argument(AL, AL.getArgAsExpr(0), Index))
+    return;
+
+  D->addAttr(::new (S.Context) MetalBufferBindingAttr(S.Context, AL, Index));
+}
+
 ErrorAttr *Sema::mergeErrorAttr(Decl *D, const AttributeCommonInfo &CI,
                                 StringRef NewUserDiagnostic) {
   if (const auto *EA = D->getAttr<ErrorAttr>()) {
@@ -9288,6 +9297,11 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_HLSLParamModifier:
     S.HLSL().handleParamModifierAttr(D, AL);
+    break;
+
+  // Metal attributes:
+  case ParsedAttr::AT_MetalBufferBinding:
+    handleMetalBufferBindingAttr(S, D, AL);
     break;
 
   case ParsedAttr::AT_AbiTag:

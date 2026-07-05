@@ -302,6 +302,8 @@ bool types::isHIP(ID Id) {
 
 bool types::isHLSL(ID Id) { return Id == TY_HLSL; }
 
+bool types::isMetal(ID Id) { return Id == TY_Metal; }
+
 bool types::isSrcFile(ID Id) {
   return Id != TY_Object && getPreprocessedType(Id) != TY_INVALID;
 }
@@ -375,6 +377,7 @@ types::ID types::lookupTypeForExtension(llvm::StringRef Ext) {
       .Case("cppm", TY_CXXModule)
       .Case("cxxm", TY_CXXModule)
       .Case("hlsl", TY_HLSL)
+      .Case("metal", TY_Metal)
       .Default(TY_INVALID);
 }
 

@@ -9912,6 +9912,10 @@ def hlsl_entrypoint : Option<["-"], "hlsl-entry", KIND_SEPARATE>,
                       Visibility<[ClangOption, CC1Option]>,
                       MarshallingInfoString<TargetOpts<"HLSLEntry">, "\"main\"">,
                       HelpText<"Entry point name for hlsl">;
+def fmetal_entry_EQ : Joined<["-"], "fmetal-entry=">,
+                      Visibility<[ClangOption, CC1Option]>,
+                      MarshallingInfoString<TargetOpts<"MetalEntry">>,
+                      HelpText<"Metal entry point function name">;
 def dxc_entrypoint : Option<["--", "/", "-"], "E", KIND_JOINED_OR_SEPARATE>,
                      Group<dxc_Group>,
                      Visibility<[DXCOption]>,

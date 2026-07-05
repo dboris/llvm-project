@@ -16,6 +16,7 @@
 #include "CGCall.h"
 #include "CGCleanup.h"
 #include "CGDebugInfo.h"
+#include "CGMetalRuntime.h"
 #include "CGObjCRuntime.h"
 #include "CGOpenMPRuntime.h"
 #include "CGRecordLayout.h"
@@ -3689,6 +3690,15 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   assert(E->isNonOdrUse() != NOUR_Unevaluated &&
          "should not emit an unevaluated operand");
 
+  // Metal [[buffer(N)]] parameters have no storage of their own: reference
+  // params resolve to element 0 of the SSBO; any remaining direct use of a
+  // pointer param (not a subscript, those were intercepted) is diagnosed.
+  if (getLangOpts().Metal) {
+    if (const auto *PD = dyn_cast<ParmVarDecl>(ND))
+      if (CGMetalRuntime::isBufferParam(PD))
+        return CGM.getMetalRuntime().emitBufferParamDeclRefLValue(*this, PD);
+  }
+
   if (const auto *VD = dyn_cast<VarDecl>(ND)) {
     // Global Named registers access via intrinsics only
     if (VD->getStorageClass() == SC_Register &&
@@ -5318,6 +5328,15 @@ void CodeGenFunction::EmitCountedByBoundsChecking(
 
 LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
                                                bool Accessed) {
+  // Metal [[buffer(N)]] pointer subscripts lower through the SPIR-V resource
+  // intrinsics, not pointer arithmetic (see CGMetalRuntime).
+  if (getLangOpts().Metal) {
+    if (const auto *DRE =
+            dyn_cast<DeclRefExpr>(E->getBase()->IgnoreParenImpCasts()))
+      if (const auto *PD = dyn_cast<ParmVarDecl>(DRE->getDecl()))
+        if (CGMetalRuntime::isBufferParam(PD))
+          return CGM.getMetalRuntime().emitBufferSubscriptLValue(*this, E, PD);
+  }
   const auto *PT = E->getBase()->getType()->getAs<PointerType>();
   if (PT && !PT->hasRawPointerLayout())
     return EmitWidePtrArraySubscriptExpr(E, Accessed);

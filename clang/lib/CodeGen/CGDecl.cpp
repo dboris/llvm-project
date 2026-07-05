@@ -14,6 +14,7 @@
 #include "CGCXXABI.h"
 #include "CGCleanup.h"
 #include "CGDebugInfo.h"
+#include "CGMetalRuntime.h"
 #include "CGOpenCLRuntime.h"
 #include "CGOpenMPRuntime.h"
 #include "CGRecordLayout.h"
@@ -2787,6 +2788,22 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
   // FIXME: Why isn't ImplicitParamDecl a ParmVarDecl?
   assert((isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D)) &&
          "Invalid argument to EmitParmDecl");
+
+  // Metal [[buffer(N)]] parameters get no storage: a pointer-typed alloca
+  // would need the VariablePointers capability in logical SPIR-V, and every
+  // use is lowered through the SPIR-V resource intrinsics instead (see
+  // CGMetalRuntime). Map the decl to a poison address; the CGExpr hooks
+  // intercept all reads before it is ever dereferenced.
+  if (getLangOpts().Metal) {
+    if (const auto *PD = dyn_cast<ParmVarDecl>(&D);
+        PD && CGMetalRuntime::isBufferParam(PD)) {
+      llvm::Type *Ty = ConvertTypeForMem(D.getType());
+      CharUnits Align = getContext().getDeclAlign(&D);
+      setAddrOfLocalVar(
+          &D, Address(llvm::PoisonValue::get(CGM.UnqualPtrTy), Ty, Align));
+      return;
+    }
+  }
 
   // Set the name of the parameter's initial value to make IR easier to
   // read. Don't modify the names of globals.

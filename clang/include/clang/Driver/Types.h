@@ -98,6 +98,9 @@ namespace types {
   /// isHLSL - Is this an HLSL input.
   bool isHLSL(ID Id);
 
+  /// isMetal - Is this a Metal Shading Language input.
+  bool isMetal(ID Id);
+
   /// isSrcFile - Is this a source file, i.e. something that still has to be
   /// preprocessed. The logic behind this is the same that decides if the first
   /// compilation phase is a preprocessing one.

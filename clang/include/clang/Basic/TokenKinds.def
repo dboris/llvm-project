@@ -294,6 +294,7 @@ PUNCTUATOR(greatergreatergreater, ">>>")
 //   KEYFIXEDPOINT - This is a keyword according to the N1169 fixed point
 //                   extension.
 //   KEYZOS - This is a keyword in C/C++ on z/OS
+//   KEYMETAL - This is a keyword in the Metal Shading Language
 //
 KEYWORD(auto                        , KEYALL)
 KEYWORD(break                       , KEYALL)
@@ -631,7 +632,7 @@ KEYWORD(__private                   , KEYOPENCLC | KEYOPENCLCXX)
 KEYWORD(__generic                   , KEYOPENCLC | KEYOPENCLCXX)
 ALIAS("global", __global            , KEYOPENCLC | KEYOPENCLCXX)
 ALIAS("local", __local              , KEYOPENCLC | KEYOPENCLCXX)
-ALIAS("constant", __constant        , KEYOPENCLC | KEYOPENCLCXX)
+ALIAS("constant", __constant        , KEYOPENCLC | KEYOPENCLCXX | KEYMETAL)
 ALIAS("private", __private          , KEYOPENCLC)
 ALIAS("generic", __generic          , KEYOPENCLC | KEYOPENCLCXX)
 // OpenCL function qualifiers
@@ -671,6 +672,17 @@ KEYWORD(out                         , KEYHLSL)
 TYPE_TRAIT_2(__builtin_hlsl_is_scalarized_layout_compatible, IsScalarizedLayoutCompatible, KEYHLSL)
 TYPE_TRAIT_1(__builtin_hlsl_is_intangible, IsIntangibleType, KEYHLSL)
 TYPE_TRAIT_1(__builtin_hlsl_is_typed_resource_element_compatible, IsTypedResourceElementCompatible, KEYHLSL)
+
+// Metal Shading Language keywords.
+// Function qualifiers.
+KEYWORD(vertex                      , KEYMETAL)
+KEYWORD(fragment                    , KEYMETAL)
+// Address space qualifiers, aliased onto the OpenCL address-space keywords so
+// the whole parse/Sema path is reused ("constant" reuses the OpenCL alias
+// above, extended with KEYMETAL).
+ALIAS("device", __global            , KEYMETAL)
+ALIAS("thread", __private           , KEYMETAL)
+ALIAS("threadgroup", __local        , KEYMETAL)
 
 // OpenMP Type Traits
 UNARY_EXPR_OR_TYPE_TRAIT(__builtin_omp_required_simd_align, OpenMPRequiredSimdAlign, KEYALL)

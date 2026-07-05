@@ -122,6 +122,10 @@ public:
 
   /// The entry point name for HLSL shader being compiled as specified by -E.
   std::string HLSLEntry;
+
+  /// The entry point name for the Metal shader being compiled as specified by
+  /// -fmetal-entry=.
+  std::string MetalEntry;
 };
 
 } // end namespace clang

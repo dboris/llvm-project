@@ -447,6 +447,8 @@ def ObjCNonFragileRuntime
 
 def HLSL : LangOpt<"HLSL">;
 
+def Metal : LangOpt<"Metal">;
+
 // Language option for CMSE extensions
 def Cmse : LangOpt<"Cmse">;
 
@@ -1771,14 +1773,16 @@ def OpenCLAccess : Attr {
 }
 
 def OpenCLPrivateAddressSpace : TypeAttr {
+  // "thread" is the Metal Shading Language spelling.
   let Spellings = [CustomKeyword<"__private">, CustomKeyword<"private">,
-                   Clang<"opencl_private">];
+                   CustomKeyword<"thread">, Clang<"opencl_private">];
   let Documentation = [OpenCLAddressSpacePrivateDocs];
 }
 
 def OpenCLGlobalAddressSpace : TypeAttr {
+  // "device" is the Metal Shading Language spelling.
   let Spellings = [CustomKeyword<"__global">, CustomKeyword<"global">,
-                   Clang<"opencl_global">];
+                   CustomKeyword<"device">, Clang<"opencl_global">];
   let Documentation = [OpenCLAddressSpaceGlobalDocs];
 }
 
@@ -1793,8 +1797,9 @@ def OpenCLGlobalHostAddressSpace : TypeAttr {
 }
 
 def OpenCLLocalAddressSpace : TypeAttr {
+  // "threadgroup" is the Metal Shading Language spelling.
   let Spellings = [CustomKeyword<"__local">, CustomKeyword<"local">,
-                   Clang<"opencl_local">];
+                   CustomKeyword<"threadgroup">, Clang<"opencl_local">];
   let Documentation = [OpenCLAddressSpaceLocalDocs];
 }
 
@@ -5217,6 +5222,57 @@ def HLSLVkConstantId : InheritableAttr {
   let Subjects = SubjectList<[ExternalGlobalVar]>;
   let LangOpts = [HLSL];
   let Documentation = [VkConstantIdDocs];
+}
+
+// Metal Shading Language attributes.
+def MetalVertex : InheritableAttr {
+  let Spellings = [CustomKeyword<"vertex">];
+  let Subjects = SubjectList<[Function]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalFragment : InheritableAttr {
+  let Spellings = [CustomKeyword<"fragment">];
+  let Subjects = SubjectList<[Function]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalPosition : InheritableAttr {
+  // Unscoped C++11 spellings require explicit (non-default) version info;
+  // there is no SD-6 value for the Metal attributes, so use the fork vintage.
+  let Spellings = [CXX11<"", "position", 202607>];
+  let Subjects = SubjectList<[Field]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalVertexId : InheritableAttr {
+  let Spellings = [CXX11<"", "vertex_id", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalStageIn : InheritableAttr {
+  let Spellings = [CXX11<"", "stage_in", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalBufferBinding : InheritableAttr {
+  let Spellings = [CXX11<"", "buffer", 202607>];
+  let Args = [UnsignedArgument<"Index">];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
 }
 
 def RandomizeLayout : InheritableAttr {

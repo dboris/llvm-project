@@ -17,6 +17,7 @@
 #include "CGCleanup.h"
 #include "CGDebugInfo.h"
 #include "CGHLSLRuntime.h"
+#include "CGMetalRuntime.h"
 #include "CGOpenMPRuntime.h"
 #include "CodeGenModule.h"
 #include "CodeGenPGO.h"
@@ -1281,6 +1282,12 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     if (FD->hasAttr<HLSLShaderAttr>()) {
       CGM.getHLSLRuntime().emitEntryFunction(FD, Fn);
     }
+  }
+
+  if (FD && getLangOpts().Metal) {
+    // Metal vertex/fragment entry points get a void() interface wrapper.
+    if (FD->hasAttr<MetalVertexAttr>() || FD->hasAttr<MetalFragmentAttr>())
+      CGM.getMetalRuntime().emitEntryFunction(FD, Fn);
   }
 
   EmitFunctionProlog(*CurFnInfo, CurFn, Args);

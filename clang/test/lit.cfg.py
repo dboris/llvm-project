@@ -37,6 +37,7 @@ config.suffixes = [
     ".cuh",
     ".hip",
     ".hlsl",
+    ".metal",
     ".ll",
     ".cl",
     ".clcpp",

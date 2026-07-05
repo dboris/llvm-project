@@ -18,6 +18,7 @@
 #include "CGCall.h"
 #include "CGDebugInfo.h"
 #include "CGHLSLRuntime.h"
+#include "CGMetalRuntime.h"
 #include "CGObjCRuntime.h"
 #include "CGOpenCLRuntime.h"
 #include "CGOpenMPRuntime.h"
@@ -468,6 +469,8 @@ CodeGenModule::CodeGenModule(ASTContext &C,
     createCUDARuntime();
   if (LangOpts.HLSL)
     createHLSLRuntime();
+  if (LangOpts.Metal)
+    createMetalRuntime();
 
   // Enable TBAA unless it's suppressed. TSan and TySan need TBAA even at O0.
   if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Thread | SanitizerKind::Type) ||
@@ -623,6 +626,10 @@ void CodeGenModule::createCUDARuntime() {
 
 void CodeGenModule::createHLSLRuntime() {
   HLSLRuntime.reset(new CGHLSLRuntime(*this));
+}
+
+void CodeGenModule::createMetalRuntime() {
+  MetalRuntime.reset(new CGMetalRuntime(*this));
 }
 
 void CodeGenModule::addReplacement(StringRef Name, llvm::Constant *C) {
@@ -4001,6 +4008,19 @@ bool CodeGenModule::shouldEmitCUDAGlobalVar(const VarDecl *Global) const {
 
 void CodeGenModule::EmitGlobal(GlobalDecl GD) {
   const auto *Global = cast<ValueDecl>(GD.getDecl());
+
+  // Metal emits one SPIR-V module per entry point: with -fmetal-entry set,
+  // entry-qualified functions other than the selected one are not emitted.
+  if (LangOpts.Metal) {
+    if (const auto *FD = dyn_cast<FunctionDecl>(Global)) {
+      const std::string &Entry = getTarget().getTargetOpts().MetalEntry;
+      if (!Entry.empty() &&
+          (FD->hasAttr<MetalVertexAttr>() ||
+           FD->hasAttr<MetalFragmentAttr>()) &&
+          FD->getName() != Entry)
+        return;
+    }
+  }
 
   // Weak references don't produce any output by themselves.
   if (Global->hasAttr<WeakRefAttr>())

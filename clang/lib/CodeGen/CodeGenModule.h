@@ -95,6 +95,7 @@ class CGOpenCLRuntime;
 class CGOpenMPRuntime;
 class CGCUDARuntime;
 class CGHLSLRuntime;
+class CGMetalRuntime;
 class CoverageMappingModuleGen;
 class TargetCodeGenInfo;
 
@@ -376,6 +377,7 @@ private:
   std::unique_ptr<CGOpenMPRuntime> OpenMPRuntime;
   std::unique_ptr<CGCUDARuntime> CUDARuntime;
   std::unique_ptr<CGHLSLRuntime> HLSLRuntime;
+  std::unique_ptr<CGMetalRuntime> MetalRuntime;
   std::unique_ptr<CGDebugInfo> DebugInfo;
   std::unique_ptr<ObjCEntrypoints> ObjCData;
   llvm::MDNode *NoObjCARCExceptionsMetadata = nullptr;
@@ -612,6 +614,7 @@ private:
   void createOpenMPRuntime();
   void createCUDARuntime();
   void createHLSLRuntime();
+  void createMetalRuntime();
 
   bool isTriviallyRecursive(const FunctionDecl *F);
   bool shouldEmitFunction(GlobalDecl GD);
@@ -752,6 +755,12 @@ public:
   CGHLSLRuntime &getHLSLRuntime() {
     assert(HLSLRuntime != nullptr);
     return *HLSLRuntime;
+  }
+
+  /// Return a reference to the configured Metal runtime.
+  CGMetalRuntime &getMetalRuntime() {
+    assert(MetalRuntime != nullptr);
+    return *MetalRuntime;
   }
 
   ObjCEntrypoints &getObjCEntrypoints() const {

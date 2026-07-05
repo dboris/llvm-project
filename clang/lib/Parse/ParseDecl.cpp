@@ -1075,6 +1075,17 @@ void Parser::ParseOpenCLKernelAttributes(ParsedAttributes &attrs) {
   }
 }
 
+void Parser::ParseMetalFunctionQualifiers(ParsedAttributes &attrs) {
+  // Treat these like attributes
+  while (Tok.isOneOf(tok::kw_vertex, tok::kw_fragment)) {
+    IdentifierInfo *AttrName = Tok.getIdentifierInfo();
+    tok::TokenKind Kind = Tok.getKind();
+    SourceLocation AttrNameLoc = ConsumeToken();
+    attrs.addNew(AttrName, AttrNameLoc, AttributeScopeInfo(), nullptr, 0,
+                 Kind);
+  }
+}
+
 void Parser::ParseCUDAFunctionAttributes(ParsedAttributes &attrs) {
   while (Tok.is(tok::kw___noinline__)) {
     IdentifierInfo *AttrName = Tok.getIdentifierInfo();
@@ -4229,6 +4240,12 @@ void Parser::ParseDeclarationSpecifiers(
     // OpenCL single token adornments.
     case tok::kw___kernel:
       ParseOpenCLKernelAttributes(DS.getAttributes());
+      continue;
+
+    // Metal single token adornments.
+    case tok::kw_vertex:
+    case tok::kw_fragment:
+      ParseMetalFunctionQualifiers(DS.getAttributes());
       continue;
 
     // CUDA/HIP single token adornments.

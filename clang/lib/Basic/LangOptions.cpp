@@ -133,6 +133,8 @@ void LangOptions::setLangDefaults(LangOptions &Opts, Language Lang,
   if (Opts.HLSL && Opts.IncludeDefaultHeader)
     Includes.push_back("hlsl.h");
 
+  Opts.Metal = Lang == Language::Metal;
+
   // Set OpenCL Version.
   Opts.OpenCL = Std.isOpenCL();
   if (LangStd == LangStandard::lang_opencl10)
@@ -211,7 +213,9 @@ void LangOptions::setLangDefaults(LangOptions &Opts, Language Lang,
   // OpenCL and HLSL have half keyword
   Opts.Half = Opts.OpenCL || Opts.HLSL;
 
-  Opts.PreserveVec3Type = Opts.HLSL;
+  // Vec3 memory operations must stay vec3 for shader targets: the widened
+  // vec3-as-vec4 load/store idiom is not representable in logical SPIR-V.
+  Opts.PreserveVec3Type = Opts.HLSL || Opts.Metal;
 }
 
 FPOptions FPOptions::defaultWithoutTrailingStorage(const LangOptions &LO) {

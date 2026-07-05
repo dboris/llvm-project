@@ -259,6 +259,12 @@ LANGSTANDARD(hlsl202y, "hlsl202y",
              HLSL, "High Level Shader Language 202y",
              LineComment | HLSL | CPlusPlus | CPlusPlus11)
 
+// Metal Shading Language
+LANGSTANDARD(metal, "metal",
+             Metal, "Metal Shading Language",
+             LineComment | CPlusPlus | CPlusPlus11 | CPlusPlus14 | Digraphs |
+             Metal)
+
 
 #undef LANGSTANDARD
 #undef LANGSTANDARD_ALIAS

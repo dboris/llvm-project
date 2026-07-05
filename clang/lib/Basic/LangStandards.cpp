@@ -41,6 +41,8 @@ StringRef clang::languageToString(Language L) {
     return "HIP";
   case Language::HLSL:
     return "HLSL";
+  case Language::Metal:
+    return "Metal";
   }
 
   llvm_unreachable("unhandled language kind");
@@ -114,6 +116,8 @@ LangStandard::Kind clang::getDefaultLanguageStandard(clang::Language Lang,
     return LangStandard::lang_gnucxx17;
   case Language::HLSL:
     return LangStandard::lang_hlsl202x;
+  case Language::Metal:
+    return LangStandard::lang_metal;
   }
   llvm_unreachable("unhandled Language kind!");
 }

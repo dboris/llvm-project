@@ -213,6 +213,7 @@ StringRef getLanguageName(Language Lang) {
   case Language::CUDA:
   case Language::HIP:
   case Language::HLSL:
+  case Language::Metal:
 
   // Languages that the frontend cannot parse and compile
   case Language::Unknown:

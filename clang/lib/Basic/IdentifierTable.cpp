@@ -112,7 +112,8 @@ enum TokenKey : unsigned {
   KEYFIXEDPOINT = 0x10000000,
   KEYBOUNDSSAFETY = 0x20000000,
   KEYBOUNDSSAFETYATTRIBUTES = 0x40000000,
-  KEYMAX = KEYBOUNDSSAFETYATTRIBUTES, // The maximum key
+  KEYMETAL = 0x80000000,
+  KEYMAX = KEYMETAL, // The maximum key
   KEYALLCXX = KEYCXX | KEYCXX11 | KEYCXX20,
   KEYALL = (KEYMAX | (KEYMAX - 1)) & ~KEYNOMS18 & ~KEYNOOPENCL &
            ~KEYNOZOS // KEYNOMS18, KEYNOOPENCL, KEYNOZOS are excluded.
@@ -208,6 +209,8 @@ static KeywordStatus getKeywordStatusHelper(const LangOptions &LangOpts,
     return LangOpts.ZOSExt ? KS_Enabled : KS_Unknown;
   case KEYHLSL:
     return LangOpts.HLSL ? KS_Enabled : KS_Unknown;
+  case KEYMETAL:
+    return LangOpts.Metal ? KS_Enabled : KS_Unknown;
   case KEYNOCXX:
     // This is enabled in all non-C++ modes, but might be enabled for other
     // reasons as well.

@@ -2144,7 +2144,8 @@ void InitListChecker::CheckVectorType(const InitializedEntity &Entity,
     return;
   }
 
-  if (!SemaRef.getLangOpts().OpenCL && !SemaRef.getLangOpts().HLSL ) {
+  if (!SemaRef.getLangOpts().OpenCL && !SemaRef.getLangOpts().HLSL &&
+      !SemaRef.getLangOpts().Metal) {
     // If the initializing element is a vector, try to copy-initialize
     // instead of breaking it apart (which is doomed to failure anyway).
     Expr *Init = IList->getInit(Index);
@@ -7168,10 +7169,11 @@ void InitializationSequence::InitializeFrom(Sema &S,
 
   assert(Args.size() >= 1 && "Zero-argument case handled above");
 
-  // For HLSL ext vector types we allow list initialization behavior for C++
-  // constructor syntax. This is accomplished by converting initialization
-  // arguments an InitListExpr late.
-  if (S.getLangOpts().HLSL && Args.size() > 1 && DestType->isExtVectorType() &&
+  // For HLSL and Metal ext vector types we allow list initialization behavior
+  // for C++ constructor syntax. This is accomplished by converting
+  // initialization arguments an InitListExpr late.
+  if ((S.getLangOpts().HLSL || S.getLangOpts().Metal) && Args.size() > 1 &&
+      DestType->isExtVectorType() &&
       (SourceType.isNull() ||
        !Context.hasSameUnqualifiedType(SourceType, DestType))) {
 
@@ -8211,9 +8213,10 @@ ExprResult InitializationSequence::Perform(Sema &S,
   ExprResult CurInit((Expr *)nullptr);
   SmallVector<Expr*, 4> ArrayLoopCommonExprs;
 
-  // HLSL allows vector initialization to function like list initialization, but
-  // use the syntax of a C++-like constructor.
-  bool IsHLSLVectorInit = S.getLangOpts().HLSL && DestType->isExtVectorType() &&
+  // HLSL and Metal allow vector initialization to function like list
+  // initialization, but use the syntax of a C++-like constructor.
+  bool IsHLSLVectorInit = (S.getLangOpts().HLSL || S.getLangOpts().Metal) &&
+                          DestType->isExtVectorType() &&
                           isa<InitListExpr>(Args[0]);
   (void)IsHLSLVectorInit;
 
