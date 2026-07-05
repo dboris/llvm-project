@@ -5275,6 +5275,22 @@ def MetalBufferBinding : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def MetalTextureBinding : InheritableAttr {
+  let Spellings = [CXX11<"", "texture", 202607>];
+  let Args = [UnsignedArgument<"Index">];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+}
+
+def MetalSamplerBinding : InheritableAttr {
+  let Spellings = [CXX11<"", "sampler", 202607>];
+  let Args = [UnsignedArgument<"Index">];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+}
+
 def RandomizeLayout : InheritableAttr {
   let Spellings = [GCC<"randomize_layout">];
   let Subjects = SubjectList<[Record]>;

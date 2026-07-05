@@ -2796,7 +2796,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
   // intercept all reads before it is ever dereferenced.
   if (getLangOpts().Metal) {
     if (const auto *PD = dyn_cast<ParmVarDecl>(&D);
-        PD && CGMetalRuntime::isBufferParam(PD)) {
+        PD && CGMetalRuntime::isResourceParam(PD)) {
       llvm::Type *Ty = ConvertTypeForMem(D.getType());
       CharUnits Align = getContext().getDeclAlign(&D);
       setAddrOfLocalVar(

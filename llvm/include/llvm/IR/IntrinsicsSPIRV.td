@@ -164,6 +164,15 @@ let TargetPrefix = "spv" in {
   def int_spv_resource_store_typedbuffer
     : DefaultAttrsIntrinsic<[], [llvm_any_ty, llvm_i32_ty, llvm_anyvector_ty]>;
 
+  // Sample a (sampled image, sampler) binding-handle pair at a coordinate
+  // with an implicit LOD (fragment-stage sampling; the Harmony Metal
+  // frontend's texture.sample()). Translates to OpSampledImage +
+  // OpImageSampleImplicitLod.
+  def int_spv_resource_sampleimplicit
+      : DefaultAttrsIntrinsic<[llvm_any_ty],
+                              [llvm_any_ty, llvm_any_ty, llvm_any_ty],
+                              [IntrReadMem]>;
+
   // Memory aliasing intrinsics
   def int_spv_assign_aliasing_decoration : Intrinsic<[], [llvm_any_ty, llvm_i32_ty, llvm_metadata_ty], [ImmArg<ArgIndex<1>>]>;
 

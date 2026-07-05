@@ -293,6 +293,9 @@ private:
 
   bool selectReadImageIntrinsic(Register &ResVReg, const SPIRVType *ResType,
                                 MachineInstr &I) const;
+  bool selectSampleImplicitIntrinsic(Register &ResVReg,
+                                     const SPIRVType *ResType,
+                                     MachineInstr &I) const;
   bool selectImageWriteIntrinsic(MachineInstr &I) const;
   bool selectResourceGetPointer(Register &ResVReg, const SPIRVType *ResType,
                                 MachineInstr &I) const;
@@ -3227,6 +3230,9 @@ bool SPIRVInstructionSelector::selectIntrinsic(Register ResVReg,
   case Intrinsic::spv_resource_load_typedbuffer: {
     return selectReadImageIntrinsic(ResVReg, ResType, I);
   }
+  case Intrinsic::spv_resource_sampleimplicit: {
+    return selectSampleImplicitIntrinsic(ResVReg, ResType, I);
+  }
   case Intrinsic::spv_resource_getpointer: {
     return selectResourceGetPointer(ResVReg, ResType, I);
   }
@@ -3278,6 +3284,54 @@ bool SPIRVInstructionSelector::selectReadImageIntrinsic(
   MachineInstr &Pos = I;
 
   return generateImageRead(ResVReg, ResType, NewImageReg, IdxReg, Loc, Pos);
+}
+
+bool SPIRVInstructionSelector::selectSampleImplicitIntrinsic(
+    Register &ResVReg, const SPIRVType *ResType, MachineInstr &I) const {
+  // Harmony Metal texture.sample(): both handles come straight from
+  // handlefrombinding intrinsics, deferred-loaded here like
+  // selectReadImageIntrinsic does for storage images.
+  Register ImageReg = I.getOperand(2).getReg();
+  auto *ImageDef = cast<GIntrinsic>(getVRegDef(*MRI, ImageReg));
+  Register NewImageReg = MRI->createVirtualRegister(MRI->getRegClass(ImageReg));
+  if (!loadHandleBeforePosition(NewImageReg, GR.getSPIRVTypeForVReg(ImageReg),
+                                *ImageDef, I))
+    return false;
+
+  Register SamplerReg = I.getOperand(3).getReg();
+  auto *SamplerDef = cast<GIntrinsic>(getVRegDef(*MRI, SamplerReg));
+  Register NewSamplerReg =
+      MRI->createVirtualRegister(MRI->getRegClass(SamplerReg));
+  if (!loadHandleBeforePosition(NewSamplerReg,
+                                GR.getSPIRVTypeForVReg(SamplerReg),
+                                *SamplerDef, I))
+    return false;
+
+  Register CoordReg = I.getOperand(4).getReg();
+
+  MachineIRBuilder MIRBuilder(I);
+  SPIRVType *ImageType = GR.getSPIRVTypeForVReg(NewImageReg);
+  SPIRVType *SampledImageType =
+      GR.getOrCreateOpTypeSampledImage(ImageType, MIRBuilder);
+  Register SampledImageReg = MRI->createVirtualRegister(&SPIRV::iIDRegClass);
+  GR.assignSPIRVTypeToVReg(SampledImageType, SampledImageReg,
+                           *I.getParent()->getParent());
+
+  bool Result = BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                        TII.get(SPIRV::OpSampledImage))
+                    .addDef(SampledImageReg)
+                    .addUse(GR.getSPIRVTypeID(SampledImageType))
+                    .addUse(NewImageReg)
+                    .addUse(NewSamplerReg)
+                    .constrainAllUses(TII, TRI, RBI);
+
+  return Result && BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                           TII.get(SPIRV::OpImageSampleImplicitLod))
+                       .addDef(ResVReg)
+                       .addUse(GR.getSPIRVTypeID(ResType))
+                       .addUse(SampledImageReg)
+                       .addUse(CoordReg)
+                       .constrainAllUses(TII, TRI, RBI);
 }
 
 bool SPIRVInstructionSelector::generateImageRead(Register &ResVReg,

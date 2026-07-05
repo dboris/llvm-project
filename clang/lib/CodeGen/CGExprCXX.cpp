@@ -13,6 +13,7 @@
 #include "CGCUDARuntime.h"
 #include "CGCXXABI.h"
 #include "CGDebugInfo.h"
+#include "CGMetalRuntime.h"
 #include "CGObjCRuntime.h"
 #include "CodeGenFunction.h"
 #include "ConstantEmitter.h"
@@ -189,6 +190,16 @@ static CXXRecordDecl *getCXXRecord(const Expr *E) {
 RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
                                               ReturnValueSlot ReturnValue,
                                               llvm::CallBase **CallOrInvoke) {
+  // Metal texture.sample() on a [[texture(N)]] parameter lowers through the
+  // SPIR-V resource intrinsics; the member function is never really called.
+  if (getLangOpts().Metal) {
+    if (const auto *DRE = dyn_cast<DeclRefExpr>(
+            CE->getImplicitObjectArgument()->IgnoreParenImpCasts()))
+      if (const auto *PD = dyn_cast<ParmVarDecl>(DRE->getDecl()))
+        if (PD->hasAttr<MetalTextureBindingAttr>())
+          return CGM.getMetalRuntime().emitTextureSampleCall(*this, CE, PD);
+  }
+
   const Expr *callee = CE->getCallee()->IgnoreParens();
 
   if (isa<BinaryOperator>(callee))

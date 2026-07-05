@@ -3695,7 +3695,7 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   // pointer param (not a subscript, those were intercepted) is diagnosed.
   if (getLangOpts().Metal) {
     if (const auto *PD = dyn_cast<ParmVarDecl>(ND))
-      if (CGMetalRuntime::isBufferParam(PD))
+      if (CGMetalRuntime::isResourceParam(PD))
         return CGM.getMetalRuntime().emitBufferParamDeclRefLValue(*this, PD);
   }
 

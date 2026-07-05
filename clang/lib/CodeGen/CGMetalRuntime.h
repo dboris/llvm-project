@@ -36,11 +36,13 @@ namespace clang {
 class FunctionDecl;
 class ParmVarDecl;
 class ArraySubscriptExpr;
+class CXXMemberCallExpr;
 
 namespace CodeGen {
 class CodeGenModule;
 class CodeGenFunction;
 class LValue;
+class RValue;
 
 class CGMetalRuntime {
 public:
@@ -51,6 +53,19 @@ public:
 
   /// True if PD is a [[buffer(N)]] parameter of a Metal entry function.
   static bool isBufferParam(const ParmVarDecl *PD);
+
+  /// True if PD carries any Metal resource binding attribute
+  /// ([[buffer(N)]], [[texture(N)]], [[sampler(N)]]). Resource parameters
+  /// have no storage: every use is lowered through the SPIR-V resource
+  /// intrinsics.
+  static bool isResourceParam(const ParmVarDecl *PD);
+
+  /// RValue for `tex.sample(smp, coord)` where tex is a [[texture(N)]]
+  /// parameter — lowers to two handlefrombinding calls (image at 16+N,
+  /// sampler at 24+N in the stage's set) + llvm.spv.resource.sampleimplicit.
+  RValue emitTextureSampleCall(CodeGenFunction &CGF,
+                               const CXXMemberCallExpr *E,
+                               const ParmVarDecl *TexPD);
 
   /// LValue for `BufParam[Idx]` — lowers to
   /// llvm.spv.resource.handlefrombinding + llvm.spv.resource.getpointer.

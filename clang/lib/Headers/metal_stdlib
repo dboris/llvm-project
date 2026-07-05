@@ -1,4 +1,4 @@
-// WinCatalyst Metal Shading Language stdlib subset (Phase 3 slice 2).
+// WinCatalyst Metal Shading Language stdlib subset (Phase 3 slices 2-3).
 #ifndef __WC_METAL_STDLIB
 #define __WC_METAL_STDLIB
 
@@ -18,6 +18,21 @@ typedef __attribute__((__ext_vector_type__(4))) int int4;
 typedef __attribute__((__ext_vector_type__(2))) uint uint2;
 typedef __attribute__((__ext_vector_type__(3))) uint uint3;
 typedef __attribute__((__ext_vector_type__(4))) uint uint4;
+
+// Texture/sampler types are typecheck-only markers: parameters carrying
+// [[texture(N)]] / [[sampler(N)]] have no storage, and .sample() calls on
+// such parameters are lowered by CGMetalRuntime straight to the SPIR-V
+// resource/sampling intrinsics. The member function is deliberately never
+// defined.
+struct sampler {};
+
+template <typename T> struct texture2d {
+  typedef T __attribute__((__ext_vector_type__(4))) _wc_vec4;
+  _wc_vec4 sample(sampler s, float2 coord) const;
+};
+// The corpus also spells it with a capital D (Apple's canonical spelling is
+// texture2d; accept both).
+template <typename T> using texture2D = texture2d<T>;
 
 } // namespace metal
 
