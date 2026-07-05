@@ -241,6 +241,39 @@ RValue CGMetalRuntime::emitTextureSampleCall(CodeGenFunction &CGF,
   return RValue::get(CGF.Builder.CreateCall(SampleFn, {Img, Smp, Coord}));
 }
 
+std::optional<RValue>
+CGMetalRuntime::tryEmitMatrixVectorMul(CodeGenFunction &CGF,
+                                       const CXXOperatorCallExpr *E) {
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());
+  if (!FD || FD->getOverloadedOperator() != OO_Star ||
+      FD->getNumParams() != 2)
+    return std::nullopt;
+  const auto *NS = dyn_cast<NamespaceDecl>(FD->getDeclContext());
+  if (!NS || NS->getName() != "metal")
+    return std::nullopt;
+  const auto *RefTy = FD->getParamDecl(0)->getType()->getAs<ReferenceType>();
+  if (!RefTy)
+    return std::nullopt;
+  const RecordDecl *RD = RefTy->getPointeeType()->getAsRecordDecl();
+  if (!RD || RD->getName() != "float4x4")
+    return std::nullopt;
+
+  LValue MatLV = CGF.EmitLValue(E->getArg(0));
+  llvm::Type *MatTy = CGF.ConvertTypeForMem(RefTy->getPointeeType());
+  llvm::Value *Cols[4];
+  for (unsigned I = 0; I < 4; ++I) {
+    Address ColAddr =
+        CGF.Builder.CreateStructGEP(MatLV.getAddress(), I, "wc.mat.col");
+    Cols[I] = CGF.Builder.CreateLoad(ColAddr);
+  }
+  (void)MatTy;
+  llvm::Value *Vec = CGF.EmitScalarExpr(E->getArg(1));
+  llvm::Function *MulFn = CGM.getIntrinsic(
+      llvm::Intrinsic::spv_matrix4_times_vector, {Vec->getType()});
+  return RValue::get(CGF.Builder.CreateCall(
+      MulFn, {Cols[0], Cols[1], Cols[2], Cols[3], Vec}));
+}
+
 // Load an input-interface value for one stage_in field / builtin parameter.
 static llvm::Value *loadInterfaceInput(IRBuilder<> &B, llvm::Module &M,
                                        llvm::Type *Ty, const Twine &Name,

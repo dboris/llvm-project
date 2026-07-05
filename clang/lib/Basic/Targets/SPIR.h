@@ -56,6 +56,42 @@ static const unsigned SPIRDefIsPrivMap[] = {
     20, // wasm_funcref
 };
 
+// Metal-on-Vulkan (Harmony -x metal): MSL constant/device buffers are Vulkan
+// storage buffers, so the address-space keywords (lexed as the OpenCL
+// qualifiers) map to the StorageBuffer storage class (11) instead of the
+// OpenCL CrossWorkgroup/UniformConstant classes. Identical to
+// SPIRDefIsPrivMap otherwise.
+static const unsigned SPIRVMetalMap[] = {
+    0,  // Default
+    11, // opencl_global    (MSL `device`)
+    3,  // opencl_local     (MSL `threadgroup`)
+    11, // opencl_constant  (MSL `constant`)
+    0,  // opencl_private   (MSL `thread`)
+    4,  // opencl_generic
+    5,  // opencl_global_device
+    6,  // opencl_global_host
+    0,  // cuda_device
+    0,  // cuda_constant
+    0,  // cuda_shared
+    // SYCL address space values for this map are dummy
+    0,  // sycl_global
+    0,  // sycl_global_device
+    0,  // sycl_global_host
+    0,  // sycl_local
+    0,  // sycl_private
+    0,  // ptr32_sptr
+    0,  // ptr32_uptr
+    0,  // ptr64
+    3,  // hlsl_groupshared
+    12, // hlsl_constant
+    10, // hlsl_private
+    11, // hlsl_device
+    7,  // hlsl_input
+    // Wasm address space values for this target are dummy values,
+    // as it is only enabled for Wasm targets.
+    20, // wasm_funcref
+};
+
 // Used by both the SPIR and SPIR-V targets.
 static const unsigned SPIRDefIsGenMap[] = {
     4, // Default
@@ -328,6 +364,14 @@ public:
 
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
+
+  void adjust(DiagnosticsEngine &Diags, LangOptions &Opts,
+              const TargetInfo *Aux) override {
+    BaseSPIRVTargetInfo::adjust(Diags, Opts, Aux);
+    // See SPIRVMetalMap: Metal buffer address spaces are storage buffers.
+    if (Opts.Metal)
+      AddrSpaceMap = &SPIRVMetalMap;
+  }
 };
 
 class LLVM_LIBRARY_VISIBILITY SPIRV32TargetInfo : public BaseSPIRVTargetInfo {

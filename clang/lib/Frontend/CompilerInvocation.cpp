@@ -4725,7 +4725,8 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
     && Opts.OpenCLVersion == 200);
 
   bool HasConvergentOperations = Opts.isTargetDevice() || Opts.OpenCL ||
-                                 Opts.HLSL || T.isAMDGPU() || T.isNVPTX();
+                                 Opts.HLSL || Opts.Metal || T.isAMDGPU() ||
+                                 T.isNVPTX();
   Opts.ConvergentFunctions =
       Args.hasFlag(OPT_fconvergent_functions, OPT_fno_convergent_functions,
                    HasConvergentOperations);

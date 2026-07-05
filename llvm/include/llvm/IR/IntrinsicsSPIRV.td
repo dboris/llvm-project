@@ -173,6 +173,17 @@ let TargetPrefix = "spv" in {
                               [llvm_any_ty, llvm_any_ty, llvm_any_ty],
                               [IntrReadMem]>;
 
+  // Column-major matrix * vector via the real OpMatrixTimesVector (Harmony
+  // Metal float4x4). The four column vectors are assembled with
+  // OpCompositeConstruct into an OpTypeMatrix value first, so drivers run
+  // their native matrix path (bit-identical with glslang-built shaders).
+  def int_spv_matrix4_times_vector
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMMatchType<0>],
+                              [IntrNoMem]>;
+
   // Memory aliasing intrinsics
   def int_spv_assign_aliasing_decoration : Intrinsic<[], [llvm_any_ty, llvm_i32_ty, llvm_metadata_ty], [ImmArg<ArgIndex<1>>]>;
 

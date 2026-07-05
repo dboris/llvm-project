@@ -622,6 +622,9 @@ public:
 
   SPIRVType *getOrCreateOpTypeSampledImage(SPIRVType *ImageType,
                                            MachineIRBuilder &MIRBuilder);
+  SPIRVType *getOrCreateOpTypeMatrix(SPIRVType *ColumnType,
+                                     unsigned ColumnCount,
+                                     MachineIRBuilder &MIRBuilder);
   SPIRVType *getOrCreateOpTypeCoopMatr(MachineIRBuilder &MIRBuilder,
                                        const TargetExtType *ExtensionType,
                                        const SPIRVType *ElemType,

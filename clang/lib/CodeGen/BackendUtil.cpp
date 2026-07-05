@@ -87,6 +87,7 @@
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/JumpThreading.h"
+#include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Utils/Debugify.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <limits>
@@ -944,6 +945,21 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
       CodeGenOpts.VerifyEach, PrintPassOpts);
   SI.registerCallbacks(PIC, &MAM);
   PassBuilder PB(TM.get(), PTO, PGOOpt, &PIC, CI.getVirtualFileSystemPtr());
+
+  // Metal (Harmony): promote parameter-spill and temporary allocas before
+  // the always-inliner runs, even at O0 — logical SPIR-V cannot express
+  // pointer-typed Function-storage variables (VariablePointers), and the
+  // -x metal codegen relies on inlining + SROA leaving only the resource
+  // intrinsics' typed access chains. InstCombine must NOT run: it
+  // canonicalizes struct GEPs to byte GEPs, which the SPIR-V backend's
+  // pointer-cast legalizer cannot retype.
+  if (LangOpts.Metal) {
+    PB.registerPipelineStartEPCallback(
+        [](ModulePassManager &MPM, OptimizationLevel) {
+          MPM.addPass(createModuleToFunctionPassAdaptor(
+              SROAPass(SROAOptions::ModifyCFG)));
+        });
+  }
 
   // Handle the assignment tracking feature options.
   switch (CodeGenOpts.getAssignmentTrackingMode()) {

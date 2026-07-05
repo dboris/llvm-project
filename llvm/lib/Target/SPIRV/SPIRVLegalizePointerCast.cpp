@@ -93,11 +93,14 @@ class SPIRVLegalizePointerCast : public FunctionPass {
   // elements of type |ElementType|. Load flags will be copied from |BadLoad|,
   // which should be the load being legalized. Returns the loaded value.
   Value *loadFirstValueFromAggregate(IRBuilder<> &B, Type *ElementType,
-                                     Value *Source, LoadInst *BadLoad) {
+                                     Value *Source, LoadInst *BadLoad,
+                                     unsigned Depth = 1) {
     SmallVector<Type *, 2> Types = {BadLoad->getPointerOperandType(),
                                     BadLoad->getPointerOperandType()};
-    SmallVector<Value *, 3> Args{/* isInBounds= */ B.getInt1(false), Source,
-                                 B.getInt32(0), B.getInt32(0)};
+    SmallVector<Value *, 6> Args{/* isInBounds= */ B.getInt1(false), Source,
+                                 B.getInt32(0)};
+    for (unsigned I = 0; I < Depth; ++I)
+      Args.push_back(B.getInt32(0));
     auto *GEP = B.CreateIntrinsic(Intrinsic::spv_gep, {Types}, {Args});
     GR->buildAssignPtr(B, ElementType, GEP);
 
@@ -144,8 +147,29 @@ class SPIRVLegalizePointerCast : public FunctionPass {
     // - float v = s.m;
     else if (SST && SST->getTypeAtIndex(0u) == ToTy)
       Output = loadFirstValueFromAggregate(B, ToTy, OriginalOperand, LI);
-    else
-      llvm_unreachable("Unimplemented implicit down-cast from load.");
+    else {
+      // An all-zero GEP is constant-folded away by IRBuilder, which can hide
+      // ANY number of leading aggregate levels, not just one: descend
+      // through element 0 until the loaded type is reached (e.g. Harmony
+      // Metal's struct Uniforms { float4x4 m; } — loading m's first column
+      // reads a vec4 through a pointer deduced as Uniforms).
+      Type *CurTy = FromTy;
+      unsigned Depth = 0;
+      while (CurTy != ToTy) {
+        if (auto *ST = dyn_cast<StructType>(CurTy))
+          CurTy = ST->getTypeAtIndex(0u);
+        else if (auto *AT = dyn_cast<ArrayType>(CurTy))
+          CurTy = AT->getElementType();
+        else
+          break;
+        ++Depth;
+      }
+      if (CurTy == ToTy && Depth > 0)
+        Output =
+            loadFirstValueFromAggregate(B, ToTy, OriginalOperand, LI, Depth);
+      else
+        llvm_unreachable("Unimplemented implicit down-cast from load.");
+    }
 
     GR->replaceAllUsesWith(LI, Output, /* DeleteOld= */ true);
     DeadInstructions.push_back(LI);
@@ -297,6 +321,46 @@ class SPIRVLegalizePointerCast : public FunctionPass {
         }
 
         if (Intrin->getIntrinsicID() == Intrinsic::spv_gep) {
+          // A constant-folded zero-GEP can leave this GEP typed against an
+          // inner aggregate of the base's deduced type. Reinsert the elided
+          // leading zero indices so the emitted access chain descends the
+          // outer aggregate levels first (e.g. Harmony Metal: float4x4
+          // member GEPs against a Uniforms-deduced SSBO element pointer).
+          Type *GepSrcTy = GR->findDeducedElementType(CastedOperand);
+          Type *OrigTy = GR->findDeducedElementType(OriginalOperand);
+          if (GepSrcTy && OrigTy && GepSrcTy != OrigTy) {
+            Type *CurTy = OrigTy;
+            unsigned Depth = 0;
+            while (CurTy != GepSrcTy) {
+              if (auto *ST = dyn_cast<StructType>(CurTy))
+                CurTy = ST->getTypeAtIndex(0u);
+              else if (auto *AT = dyn_cast<ArrayType>(CurTy))
+                CurTy = AT->getElementType();
+              else
+                break;
+              ++Depth;
+            }
+            if (CurTy == GepSrcTy && Depth > 0) {
+              B.SetInsertPoint(Intrin);
+              SmallVector<Value *> NewArgs;
+              NewArgs.push_back(Intrin->getArgOperand(0)); // isInBounds
+              NewArgs.push_back(OriginalOperand);          // base
+              NewArgs.push_back(Intrin->getArgOperand(2)); // pointer index
+              for (unsigned I = 0; I < Depth; ++I)
+                NewArgs.push_back(B.getInt32(0));
+              for (unsigned I = 3; I < Intrin->arg_size(); ++I)
+                NewArgs.push_back(Intrin->getArgOperand(I));
+              SmallVector<Type *, 2> Types = {Intrin->getType(),
+                                              OriginalOperand->getType()};
+              auto *NewGEP =
+                  B.CreateIntrinsic(Intrinsic::spv_gep, {Types}, {NewArgs});
+              if (Type *ResTy = GR->findDeducedElementType(Intrin))
+                GR->buildAssignPtr(B, ResTy, NewGEP);
+              GR->replaceAllUsesWith(Intrin, NewGEP, /* DeleteOld= */ true);
+              DeadInstructions.push_back(Intrin);
+              continue;
+            }
+          }
           GR->replaceAllUsesWith(CastedOperand, OriginalOperand,
                                  /* DeleteOld= */ false);
           continue;

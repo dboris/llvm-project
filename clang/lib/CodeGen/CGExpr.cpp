@@ -6744,6 +6744,15 @@ RValue CodeGenFunction::EmitRValueForField(LValue LV,
 RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
                                      ReturnValueSlot ReturnValue,
                                      llvm::CallBase **CallOrInvoke) {
+  // Metal float4x4 * float4 lowers to the native OpMatrixTimesVector so
+  // drivers use the same arithmetic path as for GLSL-built shaders.
+  if (getLangOpts().Metal) {
+    if (const auto *OCE = dyn_cast<CXXOperatorCallExpr>(E))
+      if (std::optional<RValue> R =
+              CGM.getMetalRuntime().tryEmitMatrixVectorMul(*this, OCE))
+        return *R;
+  }
+
   llvm::CallBase *CallOrInvokeStorage;
   if (!CallOrInvoke) {
     CallOrInvoke = &CallOrInvokeStorage;

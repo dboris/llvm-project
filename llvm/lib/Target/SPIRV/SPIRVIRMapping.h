@@ -67,6 +67,7 @@ enum SpecialTypeKind {
   STK_MachineInstr,
   STK_VkBuffer,
   STK_ExplictLayoutType,
+  STK_Matrix,
   STK_Last = -1
 };
 
@@ -123,6 +124,11 @@ inline IRHandle irhandle_sampled_image(const Type *SampledTy,
 
 inline IRHandle irhandle_sampler() {
   return std::make_tuple(nullptr, 0U, SpecialTypeKind::STK_Sampler);
+}
+
+inline IRHandle irhandle_matrix(const MachineInstr *ColumnTy,
+                                unsigned ColumnCount) {
+  return std::make_tuple(ColumnTy, ColumnCount, SpecialTypeKind::STK_Matrix);
 }
 
 inline IRHandle irhandle_pipe(uint8_t AQ) {

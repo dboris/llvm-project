@@ -296,6 +296,8 @@ private:
   bool selectSampleImplicitIntrinsic(Register &ResVReg,
                                      const SPIRVType *ResType,
                                      MachineInstr &I) const;
+  bool selectMatrix4TimesVector(Register &ResVReg, const SPIRVType *ResType,
+                                MachineInstr &I) const;
   bool selectImageWriteIntrinsic(MachineInstr &I) const;
   bool selectResourceGetPointer(Register &ResVReg, const SPIRVType *ResType,
                                 MachineInstr &I) const;
@@ -3233,6 +3235,9 @@ bool SPIRVInstructionSelector::selectIntrinsic(Register ResVReg,
   case Intrinsic::spv_resource_sampleimplicit: {
     return selectSampleImplicitIntrinsic(ResVReg, ResType, I);
   }
+  case Intrinsic::spv_matrix4_times_vector: {
+    return selectMatrix4TimesVector(ResVReg, ResType, I);
+  }
   case Intrinsic::spv_resource_getpointer: {
     return selectResourceGetPointer(ResVReg, ResType, I);
   }
@@ -3331,6 +3336,36 @@ bool SPIRVInstructionSelector::selectSampleImplicitIntrinsic(
                        .addUse(GR.getSPIRVTypeID(ResType))
                        .addUse(SampledImageReg)
                        .addUse(CoordReg)
+                       .constrainAllUses(TII, TRI, RBI);
+}
+
+bool SPIRVInstructionSelector::selectMatrix4TimesVector(
+    Register &ResVReg, const SPIRVType *ResType, MachineInstr &I) const {
+  // (c0, c1, c2, c3, v): build the OpTypeMatrix value from its four column
+  // vectors, then multiply with the native instruction so drivers use the
+  // same arithmetic path as for GLSL-built shaders (Harmony Metal float4x4).
+  MachineIRBuilder MIRBuilder(I);
+  SPIRVType *ColType = GR.getSPIRVTypeForVReg(I.getOperand(2).getReg());
+  SPIRVType *MatType = GR.getOrCreateOpTypeMatrix(ColType, 4, MIRBuilder);
+  Register MatReg = MRI->createVirtualRegister(&SPIRV::iIDRegClass);
+  GR.assignSPIRVTypeToVReg(MatType, MatReg, *I.getParent()->getParent());
+
+  bool Result = BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                        TII.get(SPIRV::OpCompositeConstruct))
+                    .addDef(MatReg)
+                    .addUse(GR.getSPIRVTypeID(MatType))
+                    .addUse(I.getOperand(2).getReg())
+                    .addUse(I.getOperand(3).getReg())
+                    .addUse(I.getOperand(4).getReg())
+                    .addUse(I.getOperand(5).getReg())
+                    .constrainAllUses(TII, TRI, RBI);
+
+  return Result && BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                           TII.get(SPIRV::OpMatrixTimesVector))
+                       .addDef(ResVReg)
+                       .addUse(GR.getSPIRVTypeID(ResType))
+                       .addUse(MatReg)
+                       .addUse(I.getOperand(6).getReg())
                        .constrainAllUses(TII, TRI, RBI);
 }
 

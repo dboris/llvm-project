@@ -19,6 +19,36 @@ typedef __attribute__((__ext_vector_type__(2))) uint uint2;
 typedef __attribute__((__ext_vector_type__(3))) uint uint3;
 typedef __attribute__((__ext_vector_type__(4))) uint uint4;
 
+// Column-major 4x4 float matrix. The layout (four float4 columns) is
+// byte-identical to MSL/std430 mat4, so `constant` buffers holding one bind
+// directly. The multiply must fold into its caller: an access-chain result
+// is not a memory-object declaration, so it cannot survive as an
+// OpFunctionCall argument in logical SPIR-V.
+// Named members rather than float4[4]: an all-zero GEP is constant-folded
+// away by IRBuilder, and the backend's pointer-cast legalizer only descends
+// ONE aggregate level when retyping such a load (struct->vec4 works,
+// struct->array->vec4 does not).
+struct float4x4 {
+  float4 _c0, _c1, _c2, _c3;
+};
+
+// One overload per address space a matrix can live in (references do not
+// convert across address spaces).
+inline __attribute__((always_inline)) float4 operator*(const float4x4 &m,
+                                                       float4 v) {
+  return m._c0 * v.x + m._c1 * v.y + m._c2 * v.z + m._c3 * v.w;
+}
+
+inline __attribute__((always_inline)) float4
+operator*(const constant float4x4 &m, float4 v) {
+  return m._c0 * v.x + m._c1 * v.y + m._c2 * v.z + m._c3 * v.w;
+}
+
+inline __attribute__((always_inline)) float4
+operator*(const device float4x4 &m, float4 v) {
+  return m._c0 * v.x + m._c1 * v.y + m._c2 * v.z + m._c3 * v.w;
+}
+
 // Texture/sampler types are typecheck-only markers: parameters carrying
 // [[texture(N)]] / [[sampler(N)]] have no storage, and .sample() calls on
 // such parameters are lowered by CGMetalRuntime straight to the SPIR-V

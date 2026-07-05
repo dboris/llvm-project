@@ -22,9 +22,11 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_CGMETALRUNTIME_H
 #define LLVM_CLANG_LIB_CODEGEN_CGMETALRUNTIME_H
 
+#include "CGValue.h"
 #include "clang/AST/Decl.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/IRBuilder.h"
+#include <optional>
 
 namespace llvm {
 class Function;
@@ -37,12 +39,11 @@ class FunctionDecl;
 class ParmVarDecl;
 class ArraySubscriptExpr;
 class CXXMemberCallExpr;
+class CXXOperatorCallExpr;
 
 namespace CodeGen {
 class CodeGenModule;
 class CodeGenFunction;
-class LValue;
-class RValue;
 
 class CGMetalRuntime {
 public:
@@ -66,6 +67,13 @@ public:
   RValue emitTextureSampleCall(CodeGenFunction &CGF,
                                const CXXMemberCallExpr *E,
                                const ParmVarDecl *TexPD);
+
+  /// If E is metal::operator*(float4x4, float4), lower it to
+  /// llvm.spv.matrix4.times.vector (the real OpMatrixTimesVector) so drivers
+  /// run their native matrix arithmetic — bit-identical with GLSL-built
+  /// shaders. Returns std::nullopt when E is some other operator call.
+  std::optional<RValue> tryEmitMatrixVectorMul(CodeGenFunction &CGF,
+                                               const CXXOperatorCallExpr *E);
 
   /// LValue for `BufParam[Idx]` — lowers to
   /// llvm.spv.resource.handlefrombinding + llvm.spv.resource.getpointer.

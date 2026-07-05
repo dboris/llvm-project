@@ -1533,6 +1533,23 @@ SPIRVType *SPIRVGlobalRegistry::getOrCreateOpTypeSampledImage(
   return NewMI;
 }
 
+SPIRVType *SPIRVGlobalRegistry::getOrCreateOpTypeMatrix(
+    SPIRVType *ColumnType, unsigned ColumnCount,
+    MachineIRBuilder &MIRBuilder) {
+  auto Key = SPIRV::irhandle_matrix(ColumnType, ColumnCount);
+  if (const MachineInstr *MI = findMI(Key, &MIRBuilder.getMF()))
+    return MI;
+  const MachineInstr *NewMI =
+      createOpType(MIRBuilder, [&](MachineIRBuilder &MIRBuilder) {
+        return MIRBuilder.buildInstr(SPIRV::OpTypeMatrix)
+            .addDef(createTypeVReg(MIRBuilder))
+            .addUse(getSPIRVTypeID(ColumnType))
+            .addImm(ColumnCount);
+      });
+  add(Key, NewMI);
+  return NewMI;
+}
+
 SPIRVType *SPIRVGlobalRegistry::getOrCreateOpTypeCoopMatr(
     MachineIRBuilder &MIRBuilder, const TargetExtType *ExtensionType,
     const SPIRVType *ElemType, uint32_t Scope, uint32_t Rows, uint32_t Columns,
