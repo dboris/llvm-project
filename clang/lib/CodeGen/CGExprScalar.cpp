@@ -2333,7 +2333,16 @@ Value *ScalarExprEmitter::VisitInitListExpr(InitListExpr *E) {
   // shuffles.
   unsigned CurIdx = 0;
   bool VIsPoisonShuffle = false;
-  llvm::Value *V = llvm::PoisonValue::get(VType);
+  // Metal targets logical SPIR-V, where a partially-constant vector with a
+  // poison lane (e.g. `float2(0.0, dyn)` const-folds the base insertelement to
+  // <float 0.0, poison>) lowers to OpSpecConstantOp Bitcast — a Kernel-only op
+  // that fails spirv-val for a shader. Seed the accumulator with zeroinitializer
+  // instead of poison so any const-folded base is a legal OpConstantComposite;
+  // for a complete initializer every lane is overwritten, so the seed value
+  // never reaches the result (semantically identical to poison).
+  llvm::Value *V = CGF.getLangOpts().Metal
+                       ? cast<llvm::Value>(llvm::Constant::getNullValue(VType))
+                       : cast<llvm::Value>(llvm::PoisonValue::get(VType));
   for (unsigned i = 0; i != NumInitElements; ++i) {
     Expr *IE = E->getInit(i);
     Value *Init = Visit(IE);

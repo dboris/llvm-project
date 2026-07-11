@@ -139,6 +139,7 @@ template <typename T> struct texture2d {
   _wc_vec4 sample(sampler s, float2 coord) const;             // implicit LOD
   _wc_vec4 sample(sampler s, float2 coord, level lod) const;  // explicit LOD
   unsigned int get_width() const;                             // base-level width
+  unsigned int get_height() const;                            // base-level height
 };
 // The corpus also spells it with a capital D (Apple's canonical spelling is
 // texture2d; accept both).

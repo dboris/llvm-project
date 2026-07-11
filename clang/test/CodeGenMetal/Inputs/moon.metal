@@ -168,16 +168,21 @@ float3 terrainNormal(float2 world, float t, constant Uniforms& u, sampler s,
   float2 g = terrainGrad(world, t, u, s, uHeightTex, uFineTex, uBaseTex);
   return normalize(float3(-g.x, 1.0, -g.y));
 }
+// Detail-site normal: a cheap 4-tap central difference of the FULL micro-surface
+// (base terrain + marched relief + shading octaves). synthDetail sites are dominated
+// by the procedural relief, so the C1 bicubic base gradient (terrainGrad, 32-64 taps)
+// is wasted here — 4 terrain() taps at a footprint-scaled epsilon match it closely for
+// a fraction of the cost. (terrainNormal, below, keeps the bicubic for fine real data.)
 float3 terrainNormalFine(float2 world, float t, constant Uniforms& u, sampler s,
                          texture2d<float> uHeightTex, texture2d<float> uFineTex, texture2d<float> uBaseTex){
-  float e = 3.0;
   float fpM = t * (2.0*u.fov / u.resolution.y);
-  float2 g = terrainGrad(world, t, u, s, uHeightTex, uFineTex, uBaseTex);
-  float dL = marchDetail(world-float2(e,0.0),t,u) + fineHeight(world-float2(e,0.0),fpM,u);
-  float dR = marchDetail(world+float2(e,0.0),t,u) + fineHeight(world+float2(e,0.0),fpM,u);
-  float dD = marchDetail(world-float2(0.0,e),t,u) + fineHeight(world-float2(0.0,e),fpM,u);
-  float dU = marchDetail(world+float2(0.0,e),t,u) + fineHeight(world+float2(0.0,e),fpM,u);
-  g += float2(dR - dL, dU - dD) / (2.0*e);
+  float e = max(3.0, fpM);                  // >= 1 pixel footprint (self-anti-aliasing)
+  float2 ex = float2(e, 0.0), ez = float2(0.0, e);
+  float hL = terrain(world-ex, t, u, s, uHeightTex, uFineTex, uBaseTex) + marchDetail(world-ex,t,u) + fineHeight(world-ex,fpM,u);
+  float hR = terrain(world+ex, t, u, s, uHeightTex, uFineTex, uBaseTex) + marchDetail(world+ex,t,u) + fineHeight(world+ex,fpM,u);
+  float hD = terrain(world-ez, t, u, s, uHeightTex, uFineTex, uBaseTex) + marchDetail(world-ez,t,u) + fineHeight(world-ez,fpM,u);
+  float hU = terrain(world+ez, t, u, s, uHeightTex, uFineTex, uBaseTex) + marchDetail(world+ez,t,u) + fineHeight(world+ez,fpM,u);
+  float2 g = float2(hR - hL, hU - hD) / (2.0*e);
   return normalize(float3(-g.x, 1.0, -g.y));
 }
 float fbm(float2 p){
@@ -204,12 +209,17 @@ float3 shade(float2 fc, constant Uniforms& u, sampler s,
     if (u.synthDetail > 0.5 && (p.y - h) < 50.0 * u.synthAmp) h += marchDetail(p.xz, t, u);
     if (p.y < h){ hit = true; break; }
     tPrev = t;
-    t += max(2.0, min((p.y - h) * 0.45, t * 0.02));
+    // Height-adaptive stride with a FOOTPRINT-scaled floor: near the camera the floor
+    // stays 2 m (crisp silhouettes, no rake banding), but past ~1 km the minimum step
+    // grows to one pixel footprint, so distant grazing rays don't oversample ~60x below
+    // pixel scale. Halves+ the march work AND stabilises the hit to ~1 px (less shimmer).
+    float fpM = t * (2.0*u.fov / u.resolution.y);   // metres per pixel at t
+    t += max(max(2.0, fpM), min((p.y - h) * 0.45, t * 0.02));
     if (t > far) break;
   }
   if (hit){
     float tHit = t;
-    for (int j = 0; j < 8; j++){
+    for (int j = 0; j < 6; j++){             // bisection: 2^-6 of the last stride = cm-precise
       float tm = 0.5*(tHit+tPrev);
       float3 p = uCamPos + dir*tm;
       float hm = terrain(p.xz, tm, u, s, uHeightTex, uFineTex, uBaseTex);
@@ -236,13 +246,13 @@ float3 shade(float2 fc, constant Uniforms& u, sampler s,
     float sh = 1.0;
     if (diff > 0.0 && u.shadowStrength > 0.001) {
       float tt = 14.0 * WS;
-      for (int k = 0; k < 32; k++){
-        float3 sp = p + uSunDir * tt;
+      for (int k = 0; k < 24; k++){          // 24 steps w/ faster growth (was 32) — the
+        float3 sp = p + uSunDir * tt;         // penumbra soft-min keeps it band-free
         if (sp.y > u.hMax) break;
         float clr = sp.y - terrain(sp.xz, tHit, u, s, uHeightTex, uFineTex, uBaseTex);
         if (clr < 0.0){ sh = 0.0; break; }
         sh = min(sh, 14.0 * clr / tt);
-        tt += max(20.0 * WS, tt * 0.12);
+        tt += max(20.0 * WS, tt * 0.16);
       }
       sh = mix(1.0 - 0.70 * u.shadowStrength, 1.0, clamp(sh, 0.0, 1.0));
     }
@@ -366,4 +376,37 @@ fragment float4 moon_fragment(float4 fragCoord [[position]],
     acc += shade(fc0 + off, u, samp, uHeightTex, uFineTex, uAlbedoTex, uBaseTex, uFineAlbTex, uCoarseAlbTex);
   }
   return float4(pow(acc / float(ss*ss), float3(0.85)), 1.0);
+}
+
+// FXAA (NVIDIA FXAA II, the compact WebGL-era edge blend): a cheap screen-space AA
+// post-pass over the rendered terrain. Reads the scene texture's luma at the center
+// + 4 diagonals, finds the local edge direction, and blends 1-2 taps along it — so
+// silhouette crawl is smoothed at ~8 texture taps/pixel instead of re-marching the
+// whole scene 4x for 2x2 SSAA. Runs at the shade resolution; the compositor upscales.
+fragment float4 fxaa_fragment(float4 pos [[position]],
+                              texture2d<float> tex [[texture(0)]],
+                              sampler smp [[sampler(0)]]){
+  float2 res = float2(float(tex.get_width()), float(tex.get_height()));
+  float2 inv = 1.0 / res;
+  float2 uv = pos.xy * inv;
+  float3 luma = float3(0.299, 0.587, 0.114);
+  float3 rgbNW = tex.sample(smp, uv + float2(-1.0,-1.0)*inv).rgb;
+  float3 rgbNE = tex.sample(smp, uv + float2( 1.0,-1.0)*inv).rgb;
+  float3 rgbSW = tex.sample(smp, uv + float2(-1.0, 1.0)*inv).rgb;
+  float3 rgbSE = tex.sample(smp, uv + float2( 1.0, 1.0)*inv).rgb;
+  float3 rgbM  = tex.sample(smp, uv).rgb;
+  float lNW = dot(rgbNW, luma), lNE = dot(rgbNE, luma);
+  float lSW = dot(rgbSW, luma), lSE = dot(rgbSE, luma), lM = dot(rgbM, luma);
+  float lMin = min(lM, min(min(lNW,lNE), min(lSW,lSE)));
+  float lMax = max(lM, max(max(lNW,lNE), max(lSW,lSE)));
+  float2 dir = float2(-((lNW + lNE) - (lSW + lSE)), ((lNW + lSW) - (lNE + lSE)));
+  float reduce = max((lNW+lNE+lSW+lSE) * (0.25 * (1.0/8.0)), 1.0/128.0);
+  float rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+  dir = clamp(dir * rcp, -8.0, 8.0) * inv;
+  float3 rgbA = 0.5 * (tex.sample(smp, uv + dir*(1.0/3.0 - 0.5)).rgb
+                     + tex.sample(smp, uv + dir*(2.0/3.0 - 0.5)).rgb);
+  float3 rgbB = rgbA * 0.5 + 0.25 * (tex.sample(smp, uv + dir*(-0.5)).rgb
+                                   + tex.sample(smp, uv + dir*( 0.5)).rgb);
+  float lB = dot(rgbB, luma);
+  return float4((lB < lMin || lB > lMax) ? rgbA : rgbB, 1.0);
 }

@@ -285,16 +285,19 @@ RValue CGMetalRuntime::emitTextureMemberCall(CodeGenFunction &CGF,
   }
   llvm::Value *Img = loadResourceParamHandle(CGF, TexPD, "wc.tex");
 
-  if (Name == "get_width" && E->getNumArgs() == 0) {
-    // OpImageQuerySizeLod at level 0 -> (width, height); component 0.
+  if ((Name == "get_width" || Name == "get_height") && E->getNumArgs() == 0) {
+    // OpImageQuerySizeLod at level 0 -> (width, height); component 0 = width,
+    // component 1 = height.
     auto *SizeTy = llvm::FixedVectorType::get(CGF.Builder.getInt32Ty(), 2);
     llvm::Function *QueryFn =
         CGM.getIntrinsic(llvm::Intrinsic::spv_resource_imagequerysizelod,
                          {SizeTy, Img->getType()});
     llvm::Value *Size =
         CGF.Builder.CreateCall(QueryFn, {Img, CGF.Builder.getInt32(0)});
+    unsigned Comp = (Name == "get_width") ? 0 : 1;
     return RValue::get(CGF.Builder.CreateExtractElement(
-        Size, CGF.Builder.getInt32(0), "wc.tex.width"));
+        Size, CGF.Builder.getInt32(Comp),
+        Comp == 0 ? "wc.tex.width" : "wc.tex.height"));
   }
 
   if (Name == "sample" && (E->getNumArgs() == 2 || E->getNumArgs() == 3)) {
