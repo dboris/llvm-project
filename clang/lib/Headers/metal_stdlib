@@ -49,16 +49,96 @@ operator*(const device float4x4 &m, float4 v) {
   return m._c0 * v.x + m._c1 * v.y + m._c2 * v.z + m._c3 * v.w;
 }
 
+// ---------------------------------------------------------------------------
+// Math library subset (grown per real consumer shader — Mooncraft's kMoonMSL
+// ray-marcher). Every function is `inline always_inline` (the -x metal pipeline
+// internalizes+inlines user code; nothing survives as a real call in logical
+// SPIR-V). Transcendentals map to clang builtins → LLVM intrinsics → the
+// SPIR-V backend's GLSL.std.450 ext-insts (scalar builtins for scalars,
+// __builtin_elementwise_* for the vector widths). The composite ops
+// (dot/length/normalize/mix/clamp/smoothstep/fract) expand to primitives —
+// standard shader idioms, kept componentwise to avoid vector-select IR.
+#define _WC_MFN inline __attribute__((always_inline))
+
+// -- scalar transcendentals / rounding --
+_WC_MFN float sin(float x)  { return __builtin_sinf(x); }
+_WC_MFN float cos(float x)  { return __builtin_cosf(x); }
+_WC_MFN float exp(float x)  { return __builtin_expf(x); }
+_WC_MFN float exp2(float x) { return __builtin_exp2f(x); }
+_WC_MFN float log2(float x) { return __builtin_log2f(x); }
+_WC_MFN float sqrt(float x) { return __builtin_sqrtf(x); }
+_WC_MFN float floor(float x){ return __builtin_floorf(x); }
+_WC_MFN float abs(float x)  { return __builtin_fabsf(x); }
+_WC_MFN float pow(float x, float y) { return __builtin_powf(x, y); }
+
+// -- vector rounding / elementwise (map to vector LLVM intrinsics) --
+_WC_MFN float2 floor(float2 v) { return __builtin_elementwise_floor(v); }
+_WC_MFN float3 floor(float3 v) { return __builtin_elementwise_floor(v); }
+_WC_MFN float3 pow(float3 x, float3 y) { return __builtin_elementwise_pow(x, y); }
+
+// -- min / max (fmin/fmax semantics) --
+_WC_MFN float min(float a, float b) { return __builtin_fminf(a, b); }
+_WC_MFN float max(float a, float b) { return __builtin_fmaxf(a, b); }
+
+// -- fract = x - floor(x) --
+_WC_MFN float  fract(float x)  { return x - __builtin_floorf(x); }
+_WC_MFN float2 fract(float2 v) { return v - __builtin_elementwise_floor(v); }
+
+// -- clamp (scalar bounds; componentwise for vectors) --
+_WC_MFN float clamp(float x, float lo, float hi) {
+  return x < lo ? lo : (x > hi ? hi : x);
+}
+// (No int clamp overload: it would tie with the float one for `double` literal
+// args — double->float and double->int are equal-rank conversions. kMoonMSL's
+// only integer clamp, clamp(u.ss, 1, 3), resolves through the float overload
+// and narrows back to int at the assignment, which is exact for that range.)
+_WC_MFN float2 clamp(float2 v, float lo, float hi) {
+  return float2(clamp(v.x, lo, hi), clamp(v.y, lo, hi));
+}
+_WC_MFN float3 clamp(float3 v, float lo, float hi) {
+  return float3(clamp(v.x, lo, hi), clamp(v.y, lo, hi), clamp(v.z, lo, hi));
+}
+
+// -- mix = x + (y - x) * a --
+_WC_MFN float  mix(float x, float y, float a)    { return x + (y - x) * a; }
+_WC_MFN float2 mix(float2 x, float2 y, float a)  { return x + (y - x) * a; }
+_WC_MFN float3 mix(float3 x, float3 y, float a)  { return x + (y - x) * a; }
+
+// -- smoothstep (scalar) --
+_WC_MFN float smoothstep(float e0, float e1, float x) {
+  float t = clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+// -- dot / length / normalize --
+_WC_MFN float dot(float2 a, float2 b) { return a.x * b.x + a.y * b.y; }
+_WC_MFN float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+_WC_MFN float length(float2 v) { return __builtin_sqrtf(dot(v, v)); }
+_WC_MFN float length(float3 v) { return __builtin_sqrtf(dot(v, v)); }
+_WC_MFN float2 normalize(float2 v) { return v / length(v); }
+_WC_MFN float3 normalize(float3 v) { return v / length(v); }
+
+#undef _WC_MFN
+
 // Texture/sampler types are typecheck-only markers: parameters carrying
 // [[texture(N)]] / [[sampler(N)]] have no storage, and .sample() calls on
 // such parameters are lowered by CGMetalRuntime straight to the SPIR-V
-// resource/sampling intrinsics. The member function is deliberately never
+// resource/sampling intrinsics. The member functions are deliberately never
 // defined.
 struct sampler {};
 
+// LOD-sampling option: `tex.sample(s, uv, level(lod))`. A plain wrapper over the
+// float LOD; CGMetalRuntime reads it to emit an explicit-LOD image sample.
+struct level {
+  float _lod;
+  inline __attribute__((always_inline)) level(float l) : _lod(l) {}
+};
+
 template <typename T> struct texture2d {
   typedef T __attribute__((__ext_vector_type__(4))) _wc_vec4;
-  _wc_vec4 sample(sampler s, float2 coord) const;
+  _wc_vec4 sample(sampler s, float2 coord) const;             // implicit LOD
+  _wc_vec4 sample(sampler s, float2 coord, level lod) const;  // explicit LOD
+  unsigned int get_width() const;                             // base-level width
 };
 // The corpus also spells it with a capital D (Apple's canonical spelling is
 // texture2d; accept both).
