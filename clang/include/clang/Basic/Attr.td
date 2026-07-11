@@ -5244,8 +5244,10 @@ def MetalFragment : InheritableAttr {
 def MetalPosition : InheritableAttr {
   // Unscoped C++11 spellings require explicit (non-default) version info;
   // there is no SD-6 value for the Metal attributes, so use the fork vintage.
+  // On a Field: a varying struct's position slot. On a ParmVar: the
+  // fragment-stage FragCoord input taken directly (moon_fragment style).
   let Spellings = [CXX11<"", "position", 202607>];
-  let Subjects = SubjectList<[Field]>;
+  let Subjects = SubjectList<[Field, ParmVar]>;
   let LangOpts = [Metal];
   let Documentation = [Undocumented];
   let SimpleHandler = 1;

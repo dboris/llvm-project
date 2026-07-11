@@ -3690,12 +3690,14 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
   assert(E->isNonOdrUse() != NOUR_Unevaluated &&
          "should not emit an unevaluated operand");
 
-  // Metal [[buffer(N)]] parameters have no storage of their own: reference
-  // params resolve to element 0 of the SSBO; any remaining direct use of a
-  // pointer param (not a subscript, those were intercepted) is diagnosed.
+  // Metal raw-pointer [[buffer(N)]] parameters have no storage of their own:
+  // any direct use other than a subscript (those were intercepted) is
+  // diagnosed. Reference buffer params and textures/samplers use ordinary
+  // storage — their values arrive as arguments from the entry wrapper.
   if (getLangOpts().Metal) {
     if (const auto *PD = dyn_cast<ParmVarDecl>(ND))
-      if (CGMetalRuntime::isResourceParam(PD))
+      if (CGMetalRuntime::isBufferParam(PD) &&
+          !PD->getType()->isReferenceType())
         return CGM.getMetalRuntime().emitBufferParamDeclRefLValue(*this, PD);
   }
 

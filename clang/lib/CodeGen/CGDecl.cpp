@@ -2789,14 +2789,17 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
   assert((isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D)) &&
          "Invalid argument to EmitParmDecl");
 
-  // Metal [[buffer(N)]] parameters get no storage: a pointer-typed alloca
-  // would need the VariablePointers capability in logical SPIR-V, and every
-  // use is lowered through the SPIR-V resource intrinsics instead (see
+  // Metal raw-pointer [[buffer(N)]] parameters get no storage: every use is
+  // lowered through the SPIR-V resource intrinsics per element (see
   // CGMetalRuntime). Map the decl to a poison address; the CGExpr hooks
-  // intercept all reads before it is ever dereferenced.
+  // intercept all reads before it is ever dereferenced. Texture/sampler
+  // parameters and reference buffer parameters DO get storage — their
+  // handle / element-0 pointer arrives as an ordinary argument and
+  // pre-inline SROA collapses the spill.
   if (getLangOpts().Metal) {
     if (const auto *PD = dyn_cast<ParmVarDecl>(&D);
-        PD && CGMetalRuntime::isResourceParam(PD)) {
+        PD && CGMetalRuntime::isBufferParam(PD) &&
+        !PD->getType()->isReferenceType()) {
       llvm::Type *Ty = ConvertTypeForMem(D.getType());
       CharUnits Align = getContext().getDeclAlign(&D);
       setAddrOfLocalVar(

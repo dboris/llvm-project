@@ -863,6 +863,7 @@ void RequirementHandler::initAvailableCapabilitiesForVulkan(
   addAvailableCaps({Capability::Int64, Capability::Float16, Capability::Float64,
                     Capability::GroupNonUniform, Capability::Image1D,
                     Capability::SampledBuffer, Capability::ImageBuffer,
+                    Capability::ImageQuery,
                     Capability::UniformBufferArrayDynamicIndexing,
                     Capability::SampledImageArrayDynamicIndexing,
                     Capability::StorageBufferArrayDynamicIndexing,
@@ -1806,6 +1807,16 @@ void addInstrRequirements(const MachineInstr &MI,
       Reqs.addCapability(SPIRV::Capability::StorageImageReadWithoutFormat);
     break;
   }
+  case SPIRV::OpImageQuerySizeLod:
+  case SPIRV::OpImageQuerySize:
+  case SPIRV::OpImageQueryLod:
+  case SPIRV::OpImageQueryLevels:
+  case SPIRV::OpImageQuerySamples:
+    // Image size/LOD queries need the ImageQuery capability in shader
+    // environments (Kernel implies its own query rules; harmless there).
+    if (ST.isShader())
+      Reqs.addCapability(SPIRV::Capability::ImageQuery);
+    break;
   case SPIRV::OpImageWrite: {
     Register ImageReg = MI.getOperand(0).getReg();
     SPIRVType *TypeDef = ST.getSPIRVGlobalRegistry()->getResultType(

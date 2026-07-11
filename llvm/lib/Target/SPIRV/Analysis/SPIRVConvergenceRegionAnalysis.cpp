@@ -212,33 +212,61 @@ private:
   std::unordered_set<BasicBlock *>
   findPathsToMatch(LoopInfo &LI, BasicBlock *From,
                    std::function<bool(const BasicBlock *)> isMatch) const {
-    std::unordered_set<BasicBlock *> Output;
+    // Iterative post-order walk with memoization. The result for a block
+    // depends only on the block (union over its non-back-edge successors),
+    // so each block is computed exactly once — the naive recursive walk
+    // re-explored every distinct PATH, which is exponential in the number
+    // of sequential diamonds (a fully-inlined game shader never finishes).
+    llvm::DenseMap<BasicBlock *, std::unordered_set<BasicBlock *>> Memo;
+    llvm::SmallPtrSet<BasicBlock *, 16> OnStack;
+    llvm::SmallVector<std::pair<BasicBlock *, unsigned>, 32> Stack;
+    Stack.push_back({From, 0});
+    OnStack.insert(From);
 
-    if (isMatch(From))
-      Output.insert(From);
+    while (!Stack.empty()) {
+      auto [BB, Idx] = Stack.back();
+      auto *Terminator = BB->getTerminator();
+      if (Idx < Terminator->getNumSuccessors()) {
+        Stack.back().second = Idx + 1;
+        auto *To = Terminator->getSuccessor(Idx);
+        // Ignore back edges; skip blocks already computed or currently on
+        // the stack (an on-stack successor is a cycle edge the back-edge
+        // check did not recognize — the recursive version would not have
+        // terminated on it either).
+        if (!isBackEdge(BB, To) && !Memo.contains(To) && !OnStack.contains(To))
+          if (OnStack.insert(To).second)
+            Stack.push_back({To, 0});
+        continue;
+      }
 
-    auto *Terminator = From->getTerminator();
-    for (unsigned i = 0; i < Terminator->getNumSuccessors(); ++i) {
-      auto *To = Terminator->getSuccessor(i);
-      // Ignore back edges.
-      if (isBackEdge(From, To))
+      Stack.pop_back();
+      OnStack.erase(BB);
+      if (Memo.contains(BB))
         continue;
 
-      auto ChildSet = findPathsToMatch(LI, To, isMatch);
-      if (ChildSet.size() == 0)
-        continue;
+      std::unordered_set<BasicBlock *> Result;
+      if (isMatch(BB))
+        Result.insert(BB);
+      for (unsigned i = 0; i < Terminator->getNumSuccessors(); ++i) {
+        auto *To = Terminator->getSuccessor(i);
+        if (isBackEdge(BB, To))
+          continue;
+        auto It = Memo.find(To);
+        if (It == Memo.end() || It->second.empty())
+          continue;
 
-      Output.insert(ChildSet.begin(), ChildSet.end());
-      Output.insert(From);
-      if (LI.isLoopHeader(From)) {
-        auto *L = LI.getLoopFor(From);
-        for (auto *BB : L->getBlocks()) {
-          Output.insert(BB);
+        Result.insert(It->second.begin(), It->second.end());
+        Result.insert(BB);
+        if (LI.isLoopHeader(BB)) {
+          auto *L = LI.getLoopFor(BB);
+          for (auto *Block : L->getBlocks())
+            Result.insert(Block);
         }
       }
+      Memo[BB] = std::move(Result);
     }
 
-    return Output;
+    return Memo[From];
   }
 
   SmallPtrSet<BasicBlock *, 2>

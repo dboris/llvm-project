@@ -15,6 +15,7 @@
 #include "CGCall.h"
 #include "CGDebugInfo.h"
 #include "CGHLSLRuntime.h"
+#include "CGMetalRuntime.h"
 #include "CGOpenCLRuntime.h"
 #include "CGRecordLayout.h"
 #include "TargetInfo.h"
@@ -370,6 +371,14 @@ llvm::Type *CodeGenTypes::ConvertType(QualType T) {
         return Ty;
     }
   }
+
+  // Metal resource marker records (metal::texture2d<T> / metal::sampler)
+  // lower to the SPIR-V handle target-ext-types so entry AND helper
+  // parameters of these types carry the handle value (CGMetalRuntime).
+  if (Context.getLangOpts().Metal)
+    if (llvm::Type *HandleTy =
+            CGM.getMetalRuntime().convertResourceRecordType(T))
+      return HandleTy;
 
   // RecordTypes are cached and processed specially.
   if (const RecordType *RT = dyn_cast<RecordType>(Ty))

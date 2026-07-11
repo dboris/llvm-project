@@ -350,8 +350,17 @@ class SPIRVStructurizer : public FunctionPass {
           OutsideBlocks.insert(It->Continue);
       }
 
+      // Use a plain prune-subtree DFS, NOT partialOrderVisit: the latter
+      // stops the WHOLE walk at the first filtered block's rank. When the
+      // merge has a lower rank than legitimate construct members (an
+      // early-return cascade: the merge is a return block reached directly
+      // from the header), the visit truncates the block set, inner-construct
+      // edges get misclassified as construct exits, and the exit funneling
+      // then rewires an already-fixed inner construct's branches — leaving
+      // its OpSelectionMerge pointing at a block that is no longer its
+      // merge. The dominance filters below fully define the boundary.
       std::vector<BasicBlock *> Output;
-      partialOrderVisit(*Node->Header, [&](BasicBlock *BB) {
+      visit(*Node->Header, [&](BasicBlock *BB) {
         if (OutsideBlocks.count(BB) != 0)
           return false;
         if (DT.dominates(Node->Merge, BB) || !DT.dominates(Node->Header, BB))
@@ -495,19 +504,28 @@ class SPIRVStructurizer : public FunctionPass {
 
       Value *Load = ExitBuilder.CreateLoad(ExitBuilder.getInt32Ty(), Variable);
 
-      // If we can avoid an OpSwitch, generate an OpBranch. Reason is some
-      // OpBranch are allowed to exist without a new OpSelectionMerge if one of
-      // the branch is the parent's merge node, while OpSwitches are not.
-      if (Dsts.size() == 2) {
+      // Dispatch through a chain of 2-way conditional branches, never an
+      // OpSwitch: a switch REQUIRES an OpSelectionMerge, but this dispatch's
+      // targets are merges of DIFFERENT construct levels, so no single block
+      // can serve as its merge (step 8 then leaves the switch headerless —
+      // invalid SPIR-V). Two-way conditionals are allowed to exist as breaks
+      // toward an enclosing merge, and the remaining ones get headers later.
+      BasicBlock *Cur = NewExit;
+      for (size_t I = 0; I + 1 < Dsts.size(); ++I) {
+        IRBuilder<> CaseBuilder(Cur);
+        if (Cur != NewExit)
+          CaseBuilder.SetInsertPoint(Cur);
         Value *Condition =
-            ExitBuilder.CreateCmp(CmpInst::ICMP_EQ, DstToIndex[Dsts[0]], Load);
-        ExitBuilder.CreateCondBr(Condition, Dsts[0], Dsts[1]);
-        return NewExit;
+            CaseBuilder.CreateCmp(CmpInst::ICMP_EQ, DstToIndex[Dsts[I]], Load);
+        if (I + 2 == Dsts.size()) {
+          CaseBuilder.CreateCondBr(Condition, Dsts[I], Dsts[I + 1]);
+        } else {
+          BasicBlock *Next = BasicBlock::Create(
+              F.getContext(), NewExit->getName() + ".case", &F);
+          CaseBuilder.CreateCondBr(Condition, Dsts[I], Next);
+          Cur = Next;
+        }
       }
-
-      SwitchInst *Sw = ExitBuilder.CreateSwitch(Load, Dsts[0], Dsts.size() - 1);
-      for (BasicBlock *BB : drop_begin(Dsts))
-        Sw->addCase(DstToIndex[BB], BB);
       return NewExit;
     }
   };
@@ -916,12 +934,27 @@ class SPIRVStructurizer : public FunctionPass {
 
   bool splitCriticalEdges(Function &F) {
     LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-    Splitter S(F, LI);
 
-    DivergentConstruct Root;
-    BlockSet Visited;
-    constructDivergentConstruct(Visited, S, &*F.begin(), &Root);
-    return fixupConstruct(S, &Root);
+    // Iterate to a fixpoint: funneling an OUTER construct's exits through a
+    // new single-exit node rewires branches of blocks living in already-fixed
+    // INNER constructs, re-creating exactly the kind of construct-crossing
+    // edge this step exists to remove (cascaded early returns hit this). A
+    // properly funneled construct only exits via its merge — a boundary
+    // block — so re-running the fixup converges: each round strictly reduces
+    // the set of constructs with stray exits.
+    bool Modified = false;
+    // A generous safety bound; real shaders converge in 2-3 rounds.
+    for (unsigned Round = 0; Round < 128; ++Round) {
+      Splitter S(F, LI);
+      DivergentConstruct Root;
+      BlockSet Visited;
+      constructDivergentConstruct(Visited, S, &*F.begin(), &Root);
+      if (!fixupConstruct(S, &Root))
+        return Modified;
+      Modified = true;
+    }
+    report_fatal_error("SPIR-V structurizer critical-edge splitting did not "
+                       "converge");
   }
 
   // Simplify branches when possible:
@@ -1036,6 +1069,17 @@ class SPIRVStructurizer : public FunctionPass {
     auto ContinueBlocks = getContinueBlocks(F);
     auto HeaderBlocks = getHeaderBlocks(F);
 
+    // Merge/continue -> owning header(s), for the enclosing-construct test.
+    DenseMap<BasicBlock *, SmallVector<BasicBlock *, 2>> EscapeToHeaders;
+    for (BasicBlock &H : F) {
+      for (Instruction &I : H) {
+        if (BasicBlock *M = getDesignatedMergeBlock(&I))
+          EscapeToHeaders[M].push_back(&H);
+        if (BasicBlock *C = getDesignatedContinueBlock(&I))
+          EscapeToHeaders[C].push_back(&H);
+      }
+    }
+
     DomTreeBuilder::BBDomTree DT;
     DomTreeBuilder::BBPostDomTree PDT;
     PDT.recalculate(F);
@@ -1047,12 +1091,20 @@ class SPIRVStructurizer : public FunctionPass {
       if (succ_size(&BB) < 2)
         continue;
 
+      // An edge needs no structuring ONLY when it is a legal break: its
+      // target is the merge (or continue) of a construct ENCLOSING this
+      // block. An edge to some unrelated construct's merge or header still
+      // diverges here and needs a header on this block.
+      auto IsEnclosingEscape = [&](BasicBlock *Successor) {
+        for (BasicBlock *H : EscapeToHeaders.lookup(Successor))
+          if (DT.dominates(H, &BB) && !DT.dominates(Successor, &BB))
+            return true;
+        return false;
+      };
+
       size_t CandidateEdges = 0;
       for (BasicBlock *Successor : successors(&BB)) {
-        if (MergeBlocks.count(Successor) != 0 ||
-            ContinueBlocks.count(Successor) != 0)
-          continue;
-        if (HeaderBlocks.count(Successor) != 0)
+        if (IsEnclosingEscape(Successor))
           continue;
         CandidateEdges += 1;
       }
@@ -1093,17 +1145,45 @@ class SPIRVStructurizer : public FunctionPass {
         continue;
       }
 
-      Instruction *SplitInstruction = Merge->getTerminator();
-      if (isMergeInstruction(SplitInstruction->getPrevNode()))
-        SplitInstruction = SplitInstruction->getPrevNode();
-      BasicBlock *NewMerge =
-          Merge->splitBasicBlockBefore(SplitInstruction, "new.merge");
+      BasicBlock *NewMerge = nullptr;
+      if (!DT.dominates(Header, Merge)) {
+        // The immediate post-dominator also joins paths from OUTSIDE the
+        // region dominated by Header (early-return dispatch chains produce
+        // this). A selection merge must be structurally dominated by its
+        // header, so funnel this construct's edges into a dedicated
+        // pre-merge block that then jumps to the shared join.
+        NewMerge = BasicBlock::Create(F.getContext(),
+                                      Merge->getName() + ".pre.merge", &F);
+        IRBuilder<> PreBuilder(NewMerge);
+        PreBuilder.CreateBr(Merge);
+        // No PHI fixups needed: the structurizer runs after RegToMem, and
+        // its own exit funneling uses variables, not PHIs.
+        for (BasicBlock *Pred : make_early_inc_range(predecessors(Merge))) {
+          if (Pred == NewMerge)
+            continue;
+          if (DT.dominates(Header, Pred))
+            replaceBranchTargets(Pred, Merge, NewMerge);
+        }
+      } else {
+        Instruction *SplitInstruction = Merge->getTerminator();
+        if (isMergeInstruction(SplitInstruction->getPrevNode()))
+          SplitInstruction = SplitInstruction->getPrevNode();
+        NewMerge = Merge->splitBasicBlockBefore(SplitInstruction, "new.merge");
+      }
 
       IRBuilder<> Builder(Header);
       Builder.SetInsertPoint(Header->getTerminator());
 
       auto MergeAddress = BlockAddress::get(NewMerge->getParent(), NewMerge);
       createOpSelectMerge(&Builder, MergeAddress);
+
+      // The CFG changed: keep the trees + block roles in sync for the
+      // remaining headers.
+      MergeBlocks.insert(NewMerge);
+      HeaderBlocks.insert(Header);
+      EscapeToHeaders[NewMerge].push_back(Header);
+      PDT.recalculate(F);
+      DT.recalculate(F);
     }
 
     return Modified;

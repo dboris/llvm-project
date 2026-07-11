@@ -190,14 +190,13 @@ static CXXRecordDecl *getCXXRecord(const Expr *E) {
 RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
                                               ReturnValueSlot ReturnValue,
                                               llvm::CallBase **CallOrInvoke) {
-  // Metal texture.sample() on a [[texture(N)]] parameter lowers through the
-  // SPIR-V resource intrinsics; the member function is never really called.
+  // Metal texture member calls (sample / get_width) on a texture parameter —
+  // of the entry OR of a helper — lower through the SPIR-V resource
+  // intrinsics; the member function is never really called.
   if (getLangOpts().Metal) {
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(
-            CE->getImplicitObjectArgument()->IgnoreParenImpCasts()))
-      if (const auto *PD = dyn_cast<ParmVarDecl>(DRE->getDecl()))
-        if (PD->hasAttr<MetalTextureBindingAttr>())
-          return CGM.getMetalRuntime().emitTextureSampleCall(*this, CE, PD);
+    if (CGMetalRuntime::isTextureRecord(
+            CE->getImplicitObjectArgument()->getType()))
+      return CGM.getMetalRuntime().emitTextureMemberCall(*this, CE);
   }
 
   const Expr *callee = CE->getCallee()->IgnoreParens();

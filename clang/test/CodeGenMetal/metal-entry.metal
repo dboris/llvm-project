@@ -29,7 +29,7 @@ struct RasterizerData {
 //
 // VS: define void @tri_vertex() [[VS_ATTRS:#[0-9]+]]
 // VS: load i32, ptr addrspace(7) @wc.vertex_id
-// VS: call target("spirv.VulkanBuffer", [0 x %struct.TriVertex], 12, 0) @llvm.spv.resource.handlefrombinding{{.*}}(i32 0, i32 0, i32 1, i32 0, i1 false, ptr @.str.wcbuf)
+// VS: call target("spirv.VulkanBuffer", [0 x %struct.TriVertex], 12, 0) @llvm.spv.resource.handlefrombinding{{.*}}(i32 0, i32 0, i32 1, i32 0, i1 false, ptr @.str.wcres)
 // VS: call ptr addrspace(11) @llvm.spv.resource.getpointer
 // VS: getelementptr inbounds nuw %struct.TriVertex, ptr addrspace(11)
 // VS: store <4 x float> {{.*}}, ptr addrspace(8) @wc.position

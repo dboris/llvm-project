@@ -7179,7 +7179,13 @@ void InitializationSequence::InitializeFrom(Sema &S,
 
     llvm::SmallVector<Expr *> InitArgs;
     for (auto *Arg : Args) {
-      if (Arg->getType()->isExtVectorType()) {
+      // Metal keeps vector arguments WHOLE: the per-element subscript split
+      // below reuses the same Arg node for every lane, so codegen would
+      // re-evaluate the operand once per component — with side effects
+      // (texture samples) duplicated and nested constructions compounding
+      // exponentially. CheckVectorType's OpenCL/HLSL/Metal path accepts
+      // vector sub-initializers natively and emits them once, via shuffles.
+      if (Arg->getType()->isExtVectorType() && !S.getLangOpts().Metal) {
         const auto *VTy = Arg->getType()->castAs<ExtVectorType>();
         unsigned Elm = VTy->getNumElements();
         for (unsigned Idx = 0; Idx < Elm; ++Idx) {

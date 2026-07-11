@@ -18,6 +18,7 @@
 #include "CGCXXABI.h"
 #include "CGCleanup.h"
 #include "CGDebugInfo.h"
+#include "CGMetalRuntime.h"
 #include "CGRecordLayout.h"
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
@@ -4846,6 +4847,15 @@ void CodeGenFunction::EmitCallArg(CallArgList &args, const Expr *E,
   // and is not a reference.
   if (const HLSLOutArgExpr *OE = dyn_cast<HLSLOutArgExpr>(E)) {
     EmitHLSLOutArgExpr(OE, args, type);
+    return;
+  }
+
+  // Metal texture/sampler arguments travel as SSA handle values, never as
+  // memory aggregates (a copy of a handle type is not expressible in logical
+  // SPIR-V): forward the named parameter's handle directly.
+  if (getLangOpts().Metal && CGMetalRuntime::isResourceRecord(type)) {
+    args.add(RValue::get(CGM.getMetalRuntime().emitResourceCallArg(*this, E)),
+             type);
     return;
   }
 

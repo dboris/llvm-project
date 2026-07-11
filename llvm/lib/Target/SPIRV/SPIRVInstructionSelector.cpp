@@ -293,9 +293,12 @@ private:
 
   bool selectReadImageIntrinsic(Register &ResVReg, const SPIRVType *ResType,
                                 MachineInstr &I) const;
-  bool selectSampleImplicitIntrinsic(Register &ResVReg,
-                                     const SPIRVType *ResType,
-                                     MachineInstr &I) const;
+  bool selectImageQuerySizeLodIntrinsic(Register &ResVReg,
+                                        const SPIRVType *ResType,
+                                        MachineInstr &I) const;
+
+  bool selectSampleIntrinsic(Register &ResVReg, const SPIRVType *ResType,
+                             MachineInstr &I, bool ExplicitLod) const;
   bool selectMatrix4TimesVector(Register &ResVReg, const SPIRVType *ResType,
                                 MachineInstr &I) const;
   bool selectImageWriteIntrinsic(MachineInstr &I) const;
@@ -3233,7 +3236,13 @@ bool SPIRVInstructionSelector::selectIntrinsic(Register ResVReg,
     return selectReadImageIntrinsic(ResVReg, ResType, I);
   }
   case Intrinsic::spv_resource_sampleimplicit: {
-    return selectSampleImplicitIntrinsic(ResVReg, ResType, I);
+    return selectSampleIntrinsic(ResVReg, ResType, I, /*ExplicitLod=*/false);
+  }
+  case Intrinsic::spv_resource_sampleexplicitlod: {
+    return selectSampleIntrinsic(ResVReg, ResType, I, /*ExplicitLod=*/true);
+  }
+  case Intrinsic::spv_resource_imagequerysizelod: {
+    return selectImageQuerySizeLodIntrinsic(ResVReg, ResType, I);
   }
   case Intrinsic::spv_matrix4_times_vector: {
     return selectMatrix4TimesVector(ResVReg, ResType, I);
@@ -3291,11 +3300,14 @@ bool SPIRVInstructionSelector::selectReadImageIntrinsic(
   return generateImageRead(ResVReg, ResType, NewImageReg, IdxReg, Loc, Pos);
 }
 
-bool SPIRVInstructionSelector::selectSampleImplicitIntrinsic(
-    Register &ResVReg, const SPIRVType *ResType, MachineInstr &I) const {
+bool SPIRVInstructionSelector::selectSampleIntrinsic(Register &ResVReg,
+                                                     const SPIRVType *ResType,
+                                                     MachineInstr &I,
+                                                     bool ExplicitLod) const {
   // Harmony Metal texture.sample(): both handles come straight from
   // handlefrombinding intrinsics, deferred-loaded here like
-  // selectReadImageIntrinsic does for storage images.
+  // selectReadImageIntrinsic does for storage images. The explicit-LOD form
+  // carries the scalar LOD as a trailing operand.
   Register ImageReg = I.getOperand(2).getReg();
   auto *ImageDef = cast<GIntrinsic>(getVRegDef(*MRI, ImageReg));
   Register NewImageReg = MRI->createVirtualRegister(MRI->getRegClass(ImageReg));
@@ -3329,14 +3341,47 @@ bool SPIRVInstructionSelector::selectSampleImplicitIntrinsic(
                     .addUse(NewImageReg)
                     .addUse(NewSamplerReg)
                     .constrainAllUses(TII, TRI, RBI);
+  if (!Result)
+    return false;
 
-  return Result && BuildMI(*I.getParent(), I, I.getDebugLoc(),
-                           TII.get(SPIRV::OpImageSampleImplicitLod))
-                       .addDef(ResVReg)
-                       .addUse(GR.getSPIRVTypeID(ResType))
-                       .addUse(SampledImageReg)
-                       .addUse(CoordReg)
-                       .constrainAllUses(TII, TRI, RBI);
+  if (ExplicitLod)
+    return BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                   TII.get(SPIRV::OpImageSampleExplicitLod))
+        .addDef(ResVReg)
+        .addUse(GR.getSPIRVTypeID(ResType))
+        .addUse(SampledImageReg)
+        .addUse(CoordReg)
+        .addImm(SPIRV::ImageOperand::Lod)
+        .addUse(I.getOperand(5).getReg())
+        .constrainAllUses(TII, TRI, RBI);
+
+  return BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                 TII.get(SPIRV::OpImageSampleImplicitLod))
+      .addDef(ResVReg)
+      .addUse(GR.getSPIRVTypeID(ResType))
+      .addUse(SampledImageReg)
+      .addUse(CoordReg)
+      .constrainAllUses(TII, TRI, RBI);
+}
+
+bool SPIRVInstructionSelector::selectImageQuerySizeLodIntrinsic(
+    Register &ResVReg, const SPIRVType *ResType, MachineInstr &I) const {
+  // Harmony Metal texture.get_width(): OpImageQuerySizeLod on the
+  // deferred-loaded image handle; the mip level comes in as an i32 operand.
+  Register ImageReg = I.getOperand(2).getReg();
+  auto *ImageDef = cast<GIntrinsic>(getVRegDef(*MRI, ImageReg));
+  Register NewImageReg = MRI->createVirtualRegister(MRI->getRegClass(ImageReg));
+  if (!loadHandleBeforePosition(NewImageReg, GR.getSPIRVTypeForVReg(ImageReg),
+                                *ImageDef, I))
+    return false;
+
+  return BuildMI(*I.getParent(), I, I.getDebugLoc(),
+                 TII.get(SPIRV::OpImageQuerySizeLod))
+      .addDef(ResVReg)
+      .addUse(GR.getSPIRVTypeID(ResType))
+      .addUse(NewImageReg)
+      .addUse(I.getOperand(3).getReg())
+      .constrainAllUses(TII, TRI, RBI);
 }
 
 bool SPIRVInstructionSelector::selectMatrix4TimesVector(

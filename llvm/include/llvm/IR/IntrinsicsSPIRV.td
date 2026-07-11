@@ -173,6 +173,23 @@ let TargetPrefix = "spv" in {
                               [llvm_any_ty, llvm_any_ty, llvm_any_ty],
                               [IntrReadMem]>;
 
+  // Explicit-LOD variant (the Harmony Metal frontend's
+  // texture.sample(s, uv, level(l))): OpSampledImage +
+  // OpImageSampleExplicitLod with the Lod image operand. Usable in any
+  // stage, unlike the implicit-LOD form.
+  def int_spv_resource_sampleexplicitlod
+      : DefaultAttrsIntrinsic<[llvm_any_ty],
+                              [llvm_any_ty, llvm_any_ty, llvm_any_ty,
+                               llvm_float_ty],
+                              [IntrReadMem]>;
+
+  // OpImageQuerySizeLod on a binding-handle image (the Harmony Metal
+  // frontend's texture.get_width()): returns the size vector of the given
+  // mip level. Requires the ImageQuery capability.
+  def int_spv_resource_imagequerysizelod
+      : DefaultAttrsIntrinsic<[llvm_any_ty], [llvm_any_ty, llvm_i32_ty],
+                              [IntrReadMem]>;
+
   // Column-major matrix * vector via the real OpMatrixTimesVector (Harmony
   // Metal float4x4). The four column vectors are assembled with
   // OpCompositeConstruct into an OpTypeMatrix value first, so drivers run

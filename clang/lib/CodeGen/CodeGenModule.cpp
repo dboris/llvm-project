@@ -2346,6 +2346,14 @@ llvm::GlobalValue::LinkageTypes
 CodeGenModule::getFunctionLinkage(GlobalDecl GD) {
   const auto *D = cast<FunctionDecl>(GD.getDecl());
 
+  // Metal: every user function is shader-internal. The external interface is
+  // the void() entry wrapper CGMetalRuntime creates; everything else must
+  // fold into it (always-inlined) and be erased — logical SPIR-V has no
+  // linkage, and helper bodies with resource-typed parameters cannot be
+  // code-generated standalone.
+  if (LangOpts.Metal)
+    return llvm::GlobalValue::InternalLinkage;
+
   GVALinkage Linkage = getContext().GetGVALinkageForFunction(D);
 
   if (const auto *Dtor = dyn_cast<CXXDestructorDecl>(D))
@@ -2700,8 +2708,13 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
   ShouldAddOptNone &= !D->hasAttr<MinSizeAttr>();
   ShouldAddOptNone &= !D->hasAttr<AlwaysInlineAttr>();
 
-  // Non-entry HLSL functions must always be inlined.
-  if (getLangOpts().HLSL && !F->hasFnAttribute(llvm::Attribute::NoInline) &&
+  // Non-entry HLSL/Metal functions must always be inlined (Metal entry
+  // functions are handled by CGMetalRuntime::emitEntryFunction, which folds
+  // the user function into its void() wrapper).
+  if ((getLangOpts().HLSL ||
+       (getLangOpts().Metal && !D->hasAttr<MetalVertexAttr>() &&
+        !D->hasAttr<MetalFragmentAttr>())) &&
+      !F->hasFnAttribute(llvm::Attribute::NoInline) &&
       !D->hasAttr<NoInlineAttr>()) {
     B.addAttribute(llvm::Attribute::AlwaysInline);
   } else if ((ShouldAddOptNone || D->hasAttr<OptimizeNoneAttr>()) &&
@@ -3788,6 +3801,15 @@ bool CodeGenModule::MustBeEmitted(const ValueDecl *Global) {
        (CodeGenOpts.KeepStaticConsts && VD->getStorageDuration() == SD_Static &&
         VD->getType().isConstQualified())))
     return true;
+
+  // Metal: non-entry functions are emitted only when the selected entry
+  // references them (one SPIR-V module per entry point) — an unreferenced
+  // helper is dead code the backend must never see.
+  if (LangOpts.Metal)
+    if (const auto *FD = dyn_cast<FunctionDecl>(Global);
+        FD && !FD->hasAttr<MetalVertexAttr>() &&
+        !FD->hasAttr<MetalFragmentAttr>())
+      return false;
 
   return getContext().DeclMustBeEmitted(Global);
 }

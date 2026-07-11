@@ -21,7 +21,12 @@
 //  * vector constants must not contain poison lanes (lowered to an
 //    OpSpecConstantOp Bitcast that requires the Kernel capability);
 //  * extract/insertelement indices must be i32 (i64 drags in the Int64
-//    capability, an optional Vulkan feature).
+//    capability, an optional Vulkan feature);
+//  * texture/sampler handles must reach the sample/query intrinsics as SSA
+//    values whose defs are the handlefrombinding intrinsics — the entry
+//    wrapper materializes them once, they thread through helper calls as
+//    ordinary arguments, and the always-inliner + pre-inline SROA collapse
+//    the plumbing before the backend runs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +36,7 @@
 #include "CodeGenModule.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/Basic/TargetOptions.h"
@@ -90,54 +96,95 @@ bool CGMetalRuntime::isBufferParam(const ParmVarDecl *PD) {
   return PD && PD->hasAttr<MetalBufferBindingAttr>();
 }
 
-bool CGMetalRuntime::isResourceParam(const ParmVarDecl *PD) {
-  return PD && (PD->hasAttr<MetalBufferBindingAttr>() ||
-                PD->hasAttr<MetalTextureBindingAttr>() ||
-                PD->hasAttr<MetalSamplerBindingAttr>());
+// The marker records live directly in namespace metal (metal_stdlib).
+static const RecordDecl *getMetalNamespaceRecord(QualType T) {
+  const RecordDecl *RD = T->getAsRecordDecl();
+  if (!RD)
+    return nullptr;
+  const auto *NS = dyn_cast<NamespaceDecl>(RD->getDeclContext());
+  if (!NS || NS->getName() != "metal")
+    return nullptr;
+  return RD;
 }
 
-llvm::Value *CGMetalRuntime::emitBufferElementPtr(CodeGenFunction &CGF,
+bool CGMetalRuntime::isTextureRecord(QualType T) {
+  const RecordDecl *RD = getMetalNamespaceRecord(T);
+  return RD && RD->getName() == "texture2d";
+}
+
+bool CGMetalRuntime::isSamplerRecord(QualType T) {
+  const RecordDecl *RD = getMetalNamespaceRecord(T);
+  return RD && RD->getName() == "sampler";
+}
+
+bool CGMetalRuntime::isResourceRecord(QualType T) {
+  return isTextureRecord(T) || isSamplerRecord(T);
+}
+
+llvm::Type *CGMetalRuntime::convertResourceRecordType(QualType T) {
+  if (isSamplerRecord(T))
+    return llvm::TargetExtType::get(CGM.getLLVMContext(), "spirv.Sampler");
+  if (isTextureRecord(T)) {
+    // OpTypeImage: Dim2D(1), depth unspecified(2), non-arrayed,
+    // single-sampled, sampled(1), format Unknown(0).
+    const auto *Spec =
+        cast<ClassTemplateSpecializationDecl>(T->getAsRecordDecl());
+    QualType Elem = Spec->getTemplateArgs()[0].getAsType();
+    llvm::Type *SampledTy = CGM.getTypes().ConvertType(Elem);
+    return llvm::TargetExtType::get(CGM.getLLVMContext(), "spirv.Image",
+                                    {SampledTy}, {1, 2, 0, 0, 1, 0});
+  }
+  return nullptr;
+}
+
+llvm::Value *CGMetalRuntime::emitHandleFromBinding(llvm::IRBuilderBase &B,
+                                                   llvm::Type *HandleTy,
+                                                   const ParmVarDecl *PD,
+                                                   unsigned Set,
+                                                   unsigned Binding) {
+  llvm::Constant *&NameStr = BufferNameStrs[PD];
+  if (!NameStr)
+    NameStr = CGM.GetAddrOfConstantCString(PD->getNameAsString(), ".str.wcres")
+                  .getPointer();
+  llvm::Function *HandleFn = CGM.getIntrinsic(
+      llvm::Intrinsic::spv_resource_handlefrombinding, {HandleTy});
+  return B.CreateCall(HandleFn,
+                      {B.getInt32(Set), B.getInt32(Binding), B.getInt32(1),
+                       B.getInt32(0), B.getInt1(false), NameStr});
+}
+
+llvm::Value *CGMetalRuntime::emitBufferElementPtr(llvm::IRBuilderBase &B,
+                                                  const FunctionDecl *FD,
                                                   const ParmVarDecl *PD,
                                                   llvm::Value *Idx,
-                                                  QualType ElemTy) {
-  const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl);
-  assert(FD && "buffer parameter outside a Metal entry function");
+                                                  llvm::Type *ElemLLVMTy) {
   auto *BindingAttr = PD->getAttr<MetalBufferBindingAttr>();
   unsigned Set = stageDescriptorSet(FD);
   unsigned Binding = BindingAttr->getIndex();
 
-  llvm::Type *ElemLLVMTy = CGF.ConvertTypeForMem(ElemTy);
   auto *RuntimeArrTy = llvm::ArrayType::get(ElemLLVMTy, 0);
   auto *HandleTy = llvm::TargetExtType::get(
       CGM.getLLVMContext(), "spirv.VulkanBuffer", {RuntimeArrTy},
       {kStorageBufferSC, /*Writable=*/0});
 
-  llvm::Constant *&NameStr = BufferNameStrs[PD];
-  if (!NameStr)
-    NameStr = CGM.GetAddrOfConstantCString(PD->getNameAsString(), ".str.wcbuf")
-                  .getPointer();
+  llvm::Value *Handle = emitHandleFromBinding(B, HandleTy, PD, Set, Binding);
 
-  llvm::Function *HandleFn = CGM.getIntrinsic(
-      llvm::Intrinsic::spv_resource_handlefrombinding, {HandleTy});
-  llvm::Value *Handle = CGF.Builder.CreateCall(
-      HandleFn, {CGF.Builder.getInt32(Set), CGF.Builder.getInt32(Binding),
-                 CGF.Builder.getInt32(1), CGF.Builder.getInt32(0),
-                 CGF.Builder.getInt1(false), NameStr});
-
-  llvm::Value *Idx32 =
-      CGF.Builder.CreateZExtOrTrunc(Idx, CGF.Builder.getInt32Ty());
+  llvm::Value *Idx32 = B.CreateZExtOrTrunc(Idx, B.getInt32Ty());
   auto *PtrTy = llvm::PointerType::get(CGM.getLLVMContext(), 11);
   llvm::Function *GetPtrFn = CGM.getIntrinsic(
       llvm::Intrinsic::spv_resource_getpointer, {PtrTy, HandleTy});
-  return CGF.Builder.CreateCall(GetPtrFn, {Handle, Idx32});
+  return B.CreateCall(GetPtrFn, {Handle, Idx32});
 }
 
 LValue CGMetalRuntime::emitBufferSubscriptLValue(CodeGenFunction &CGF,
                                                  const ArraySubscriptExpr *E,
                                                  const ParmVarDecl *PD) {
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl);
+  assert(FD && "buffer parameter outside a Metal entry function");
   llvm::Value *Idx = CGF.EmitScalarExpr(E->getIdx());
   QualType ElemTy = E->getType();
-  llvm::Value *Ptr = emitBufferElementPtr(CGF, PD, Idx, ElemTy);
+  llvm::Value *Ptr = emitBufferElementPtr(CGF.Builder, FD, PD, Idx,
+                                          CGF.ConvertTypeForMem(ElemTy));
   CharUnits Align = CGF.getContext().getTypeAlignInChars(ElemTy);
   return CGF.MakeAddrLValue(
       Address(Ptr, CGF.ConvertTypeForMem(ElemTy), Align), ElemTy);
@@ -145,100 +192,145 @@ LValue CGMetalRuntime::emitBufferSubscriptLValue(CodeGenFunction &CGF,
 
 LValue CGMetalRuntime::emitBufferParamDeclRefLValue(CodeGenFunction &CGF,
                                                     const ParmVarDecl *PD) {
+  // Only raw-pointer buffer params reach here (reference params carry the
+  // element-0 pointer as an ordinary argument). Direct uses other than a
+  // subscript (address taken, pointer arithmetic) are not representable.
   QualType T = PD->getType();
-  if (const auto *RefTy = T->getAs<ReferenceType>();
-      RefTy && PD->hasAttr<MetalBufferBindingAttr>()) {
-    // constant T& u [[buffer(N)]] — element 0 of the SSBO.
-    QualType ElemTy = RefTy->getPointeeType();
-    llvm::Value *Ptr =
-        emitBufferElementPtr(CGF, PD, CGF.Builder.getInt32(0), ElemTy);
-    CharUnits Align = CGF.getContext().getTypeAlignInChars(ElemTy);
-    return CGF.MakeAddrLValue(
-        Address(Ptr, CGF.ConvertTypeForMem(ElemTy), Align), ElemTy);
-  }
-  // Any other direct use of a resource parameter (address taken, passed to
-  // a helper, pointer arithmetic, a sampler outside a sample() call) is not
-  // representable in this slice.
   CGM.Error(PD->getLocation(),
-            "Metal resource parameters only support direct subscript or "
-            "sample() access in this implementation");
+            "Metal pointer buffer parameters only support direct subscript "
+            "access in this implementation");
   llvm::Type *Ty = CGF.ConvertType(T);
   CharUnits Align = CGF.getContext().getTypeAlignInChars(T);
   llvm::Value *Poison = llvm::PoisonValue::get(CGM.UnqualPtrTy);
   return CGF.MakeAddrLValue(Address(Poison, Ty, Align), T);
 }
 
-RValue CGMetalRuntime::emitTextureSampleCall(CodeGenFunction &CGF,
-                                             const CXXMemberCallExpr *E,
-                                             const ParmVarDecl *TexPD) {
-  const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl);
-  assert(FD && "texture parameter outside a Metal entry function");
-  llvm::Type *ResultTy = CGF.ConvertType(E->getType());
-
-  const CXXMethodDecl *MD = E->getMethodDecl();
-  const ParmVarDecl *SamplerPD = nullptr;
-  if (MD && MD->getName() == "sample" && E->getNumArgs() == 2) {
-    // Peel the by-value copy of the sampler marker struct
-    // (CXXConstructExpr / MaterializeTemporaryExpr) down to the parameter.
-    const Expr *Arg = E->getArg(0)->IgnoreParenImpCasts();
-    while (true) {
-      if (const auto *CCE = dyn_cast<CXXConstructExpr>(Arg);
-          CCE && CCE->getNumArgs() >= 1)
-        Arg = CCE->getArg(0)->IgnoreParenImpCasts();
-      else if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(Arg))
-        Arg = MTE->getSubExpr()->IgnoreParenImpCasts();
-      else
-        break;
-    }
-    if (const auto *DRE = dyn_cast<DeclRefExpr>(Arg))
-      SamplerPD = dyn_cast<ParmVarDecl>(DRE->getDecl());
+// Peel a by-value resource argument (CXXConstructExpr copy /
+// MaterializeTemporaryExpr) down to the parameter it names.
+static const ParmVarDecl *peelResourceParmRef(const Expr *E) {
+  const Expr *Arg = E->IgnoreParenImpCasts();
+  while (true) {
+    if (const auto *CCE = dyn_cast<CXXConstructExpr>(Arg);
+        CCE && CCE->getNumArgs() >= 1)
+      Arg = CCE->getArg(0)->IgnoreParenImpCasts();
+    else if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(Arg))
+      Arg = MTE->getSubExpr()->IgnoreParenImpCasts();
+    else
+      break;
   }
-  if (!SamplerPD || !SamplerPD->hasAttr<MetalSamplerBindingAttr>()) {
+  if (const auto *DRE = dyn_cast<DeclRefExpr>(Arg))
+    return dyn_cast<ParmVarDecl>(DRE->getDecl());
+  return nullptr;
+}
+
+// Load the handle value of a texture/sampler parameter. The parameter's
+// storage is an alloca of the handle type; pre-inline SROA promotes the
+// load/store plumbing so the handlefrombinding def reaches the intrinsics.
+static llvm::Value *loadResourceParamHandle(CodeGenFunction &CGF,
+                                            const ParmVarDecl *PD,
+                                            const Twine &Name) {
+  return CGF.Builder.CreateLoad(CGF.GetAddrOfLocalVar(PD), Name);
+}
+
+llvm::Value *CGMetalRuntime::emitResourceCallArg(CodeGenFunction &CGF,
+                                                 const Expr *E) {
+  if (const ParmVarDecl *PD = peelResourceParmRef(E);
+      PD && isResourceRecord(PD->getType()))
+    return loadResourceParamHandle(CGF, PD, "wc.res.arg");
+  CGM.Error(E->getExprLoc(),
+            "Metal texture/sampler arguments must name a texture/sampler "
+            "parameter in this implementation");
+  return llvm::PoisonValue::get(CGF.ConvertType(E->getType()));
+}
+
+// Peel `level(l)` (functional cast / temporary / by-value copy) down to the
+// float LOD expression and emit it.
+static llvm::Value *emitLevelLodScalar(CodeGenFunction &CGF, const Expr *E) {
+  const Expr *Arg = E->IgnoreParenImpCasts();
+  while (true) {
+    if (const auto *FCE = dyn_cast<CXXFunctionalCastExpr>(Arg)) {
+      Arg = FCE->getSubExpr()->IgnoreParenImpCasts();
+      continue;
+    }
+    if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(Arg)) {
+      Arg = MTE->getSubExpr()->IgnoreParenImpCasts();
+      continue;
+    }
+    if (const auto *CCE = dyn_cast<CXXConstructExpr>(Arg);
+        CCE && CCE->getNumArgs() >= 1) {
+      const Expr *A0 = CCE->getArg(0);
+      if (A0->getType()->isFloatingType())
+        return CGF.EmitScalarExpr(A0);
+      Arg = A0->IgnoreParenImpCasts();
+      continue;
+    }
+    break;
+  }
+  return nullptr;
+}
+
+RValue CGMetalRuntime::emitTextureMemberCall(CodeGenFunction &CGF,
+                                             const CXXMemberCallExpr *E) {
+  llvm::Type *ResultTy = CGF.ConvertType(E->getType());
+  const CXXMethodDecl *MD = E->getMethodDecl();
+  StringRef Name = MD ? MD->getName() : StringRef();
+
+  const ParmVarDecl *TexPD =
+      peelResourceParmRef(E->getImplicitObjectArgument());
+  if (!TexPD || !isTextureRecord(TexPD->getType())) {
     CGM.Error(E->getExprLoc(),
-              "only sample(<[[sampler(N)]] parameter>, coord) is supported "
-              "on Metal textures in this implementation");
+              "Metal texture member calls are only supported on texture "
+              "parameters in this implementation");
     return RValue::get(llvm::PoisonValue::get(ResultTy));
   }
+  llvm::Value *Img = loadResourceParamHandle(CGF, TexPD, "wc.tex");
 
-  // <Metal/MTLLibrary.h>: within the stage's set, textures sit at 16+N and
-  // samplers at 24+N.
-  unsigned Set = stageDescriptorSet(FD);
-  unsigned TexBinding =
-      16 + TexPD->getAttr<MetalTextureBindingAttr>()->getIndex();
-  unsigned SamplerBinding =
-      24 + SamplerPD->getAttr<MetalSamplerBindingAttr>()->getIndex();
+  if (Name == "get_width" && E->getNumArgs() == 0) {
+    // OpImageQuerySizeLod at level 0 -> (width, height); component 0.
+    auto *SizeTy = llvm::FixedVectorType::get(CGF.Builder.getInt32Ty(), 2);
+    llvm::Function *QueryFn =
+        CGM.getIntrinsic(llvm::Intrinsic::spv_resource_imagequerysizelod,
+                         {SizeTy, Img->getType()});
+    llvm::Value *Size =
+        CGF.Builder.CreateCall(QueryFn, {Img, CGF.Builder.getInt32(0)});
+    return RValue::get(CGF.Builder.CreateExtractElement(
+        Size, CGF.Builder.getInt32(0), "wc.tex.width"));
+  }
 
-  llvm::LLVMContext &Ctx = CGM.getLLVMContext();
-  llvm::Type *SampledTy =
-      cast<llvm::FixedVectorType>(ResultTy)->getElementType();
-  // OpTypeImage: Dim2D(1), depth unspecified(2), non-arrayed, single-sampled,
-  // sampled(1), format Unknown(0).
-  auto *ImageTy = llvm::TargetExtType::get(Ctx, "spirv.Image", {SampledTy},
-                                           {1, 2, 0, 0, 1, 0});
-  auto *SamplerTy = llvm::TargetExtType::get(Ctx, "spirv.Sampler");
+  if (Name == "sample" && (E->getNumArgs() == 2 || E->getNumArgs() == 3)) {
+    const ParmVarDecl *SamplerPD = peelResourceParmRef(E->getArg(0));
+    if (!SamplerPD || !isSamplerRecord(SamplerPD->getType())) {
+      CGM.Error(E->getExprLoc(),
+                "the sampler argument of Metal texture sample() must name a "
+                "sampler parameter in this implementation");
+      return RValue::get(llvm::PoisonValue::get(ResultTy));
+    }
+    llvm::Value *Smp = loadResourceParamHandle(CGF, SamplerPD, "wc.smp");
+    llvm::Value *Coord = CGF.EmitScalarExpr(E->getArg(1));
 
-  auto EmitHandle = [&](llvm::Type *HandleTy, const ParmVarDecl *PD,
-                        unsigned Binding) -> llvm::Value * {
-    llvm::Constant *&NameStr = BufferNameStrs[PD];
-    if (!NameStr)
-      NameStr =
-          CGM.GetAddrOfConstantCString(PD->getNameAsString(), ".str.wcres")
-              .getPointer();
-    llvm::Function *HandleFn = CGM.getIntrinsic(
-        llvm::Intrinsic::spv_resource_handlefrombinding, {HandleTy});
-    return CGF.Builder.CreateCall(
-        HandleFn, {CGF.Builder.getInt32(Set), CGF.Builder.getInt32(Binding),
-                   CGF.Builder.getInt32(1), CGF.Builder.getInt32(0),
-                   CGF.Builder.getInt1(false), NameStr});
-  };
-  llvm::Value *Img = EmitHandle(ImageTy, TexPD, TexBinding);
-  llvm::Value *Smp = EmitHandle(SamplerTy, SamplerPD, SamplerBinding);
-  llvm::Value *Coord = CGF.EmitScalarExpr(E->getArg(1));
+    if (E->getNumArgs() == 2) {
+      llvm::Function *SampleFn = CGM.getIntrinsic(
+          llvm::Intrinsic::spv_resource_sampleimplicit,
+          {ResultTy, Img->getType(), Smp->getType(), Coord->getType()});
+      return RValue::get(CGF.Builder.CreateCall(SampleFn, {Img, Smp, Coord}));
+    }
 
-  llvm::Function *SampleFn =
-      CGM.getIntrinsic(llvm::Intrinsic::spv_resource_sampleimplicit,
-                       {ResultTy, ImageTy, SamplerTy, Coord->getType()});
-  return RValue::get(CGF.Builder.CreateCall(SampleFn, {Img, Smp, Coord}));
+    llvm::Value *Lod = emitLevelLodScalar(CGF, E->getArg(2));
+    if (!Lod) {
+      CGM.Error(E->getExprLoc(),
+                "the LOD argument of Metal texture sample() must be "
+                "level(<float>) in this implementation");
+      return RValue::get(llvm::PoisonValue::get(ResultTy));
+    }
+    llvm::Function *SampleFn = CGM.getIntrinsic(
+        llvm::Intrinsic::spv_resource_sampleexplicitlod,
+        {ResultTy, Img->getType(), Smp->getType(), Coord->getType()});
+    return RValue::get(
+        CGF.Builder.CreateCall(SampleFn, {Img, Smp, Coord, Lod}));
+  }
+
+  CGM.Error(E->getExprLoc(), "unsupported Metal texture member call");
+  return RValue::get(llvm::PoisonValue::get(ResultTy));
 }
 
 std::optional<RValue>
@@ -288,6 +380,7 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
   llvm::Module &M = CGM.getModule();
   llvm::LLVMContext &Ctx = M.getContext();
   bool IsVertex = FD->hasAttr<MetalVertexAttr>();
+  unsigned Set = stageDescriptorSet(FD);
 
   auto *EntryTy = llvm::FunctionType::get(llvm::Type::getVoidTy(Ctx), false);
   Function *EntryFn =
@@ -300,12 +393,17 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
   EntryFn->addFnAttr("hlsl.shader",
                      llvm::Triple::getEnvironmentTypeName(
                          IsVertex ? llvm::Triple::Vertex : llvm::Triple::Pixel));
-  if (CGM.getCodeGenOpts().OptimizationLevel == 0)
-    EntryFn->addFnAttr(llvm::Attribute::OptimizeNone);
+  // NEVER OptimizeNone, even at O0: the SPIR-V backend's structurizer
+  // contract is RegToMem (demote cross-block values) -> structurize ->
+  // PromoteMemoryToRegister, and the promote step skips optnone functions
+  // while the demote step does not — leaving every demoted slot as a
+  // Function-storage OpVariable, which for the threaded resource pointers
+  // (ptr addrspace(11)) logical SPIR-V cannot express (VariablePointers).
   EntryFn->addFnAttr(llvm::Attribute::NoInline);
 
   // The user function must fold into the wrapper: logical SPIR-V has no
-  // linkage, and the poison placeholder args below must vanish.
+  // linkage, and the resource handle values passed below must reach the
+  // resource intrinsics as SSA defs.
   Fn->setLinkage(GlobalValue::InternalLinkage);
   Fn->removeFnAttr(llvm::Attribute::OptimizeNone);
   Fn->removeFnAttr(llvm::Attribute::NoInline);
@@ -363,11 +461,39 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
                                         kBuiltInVertexIndex));
       continue;
     }
-    if (isResourceParam(PD)) {
-      // Never read: every use inside the user function is lowered through
-      // llvm.spv.resource handles (see emitBufferSubscriptLValue /
-      // emitTextureSampleCall).
-      Args.emplace_back(PoisonValue::get(Param.getType()));
+    if (PD->hasAttr<MetalPositionAttr>()) {
+      // float4 fragCoord [[position]] as a direct fragment input.
+      Args.push_back(loadInterfaceInput(B, M, Param.getType(), "wc.frag_coord",
+                                        kBuiltInDecoration,
+                                        kBuiltInFragCoord));
+      continue;
+    }
+    if (const auto *TexAttr = PD->getAttr<MetalTextureBindingAttr>()) {
+      // <Metal/MTLLibrary.h>: within the stage's set, textures sit at 16+N.
+      Args.push_back(emitHandleFromBinding(B, Param.getType(), PD, Set,
+                                           16 + TexAttr->getIndex()));
+      continue;
+    }
+    if (const auto *SmpAttr = PD->getAttr<MetalSamplerBindingAttr>()) {
+      // ... and samplers at 24+N.
+      Args.push_back(emitHandleFromBinding(B, Param.getType(), PD, Set,
+                                           24 + SmpAttr->getIndex()));
+      continue;
+    }
+    if (PD->hasAttr<MetalBufferBindingAttr>()) {
+      if (const auto *RefTy = PD->getType()->getAs<ReferenceType>()) {
+        // constant T& u [[buffer(N)]] — the element-0 pointer of the SSBO,
+        // threaded as the reference argument. Member access (including a
+        // dynamic trailing index) is then ordinary typed GEPs off it.
+        llvm::Type *ElemTy =
+            CGM.getTypes().ConvertTypeForMem(RefTy->getPointeeType());
+        Args.push_back(
+            emitBufferElementPtr(B, FD, PD, B.getInt32(0), ElemTy));
+      } else {
+        // Raw device pointers keep the no-storage model: never read, every
+        // subscript is lowered per element through the resource intrinsics.
+        Args.emplace_back(PoisonValue::get(Param.getType()));
+      }
       continue;
     }
     if (PD->hasAttr<MetalStageInAttr>()) {
@@ -402,7 +528,8 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
     }
     CGM.Error(PD->getLocation(),
               "unsupported Metal entry parameter: expected [[vertex_id]], "
-              "[[buffer(N)]] or [[stage_in]]");
+              "[[position]], [[buffer(N)]], [[texture(N)]], [[sampler(N)]] "
+              "or [[stage_in]]");
     Args.emplace_back(PoisonValue::get(Param.getType()));
   }
 

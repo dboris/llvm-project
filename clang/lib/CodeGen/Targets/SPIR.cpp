@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ABIInfoImpl.h"
+#include "CGMetalRuntime.h"
 #include "HLSLBufferLayoutBuilder.h"
 #include "TargetInfo.h"
 
@@ -175,6 +176,12 @@ ABIArgInfo SPIRVABIInfo::classifyKernelArgumentType(QualType Ty) const {
 }
 
 ABIArgInfo SPIRVABIInfo::classifyArgumentType(QualType Ty) const {
+  // Metal resource records (texture2d/sampler) are SSA handle values, not
+  // memory aggregates: pass them direct as their target-ext handle type
+  // (CGMetalRuntime resource threading).
+  if (getContext().getLangOpts().Metal &&
+      CodeGen::CGMetalRuntime::isResourceRecord(Ty))
+    return ABIArgInfo::getDirect(CGT.ConvertType(Ty), 0u, nullptr, false);
   if (getTarget().getTriple().getVendor() != llvm::Triple::AMD)
     return DefaultABIInfo::classifyArgumentType(Ty);
   if (!isAggregateTypeForABI(Ty))
