@@ -2029,6 +2029,50 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
     }
     assert(classStruct->getName() == SymbolForClass(className));
 
+    // WinCatalyst: DARWIN-SPELLED ALIASES FOR THE SWIFT IMPORTER (ELF only).
+    //
+    // A Swift consumer that imports an ObjC class emits Apple/objc4 metadata: it
+    // references `OBJC_CLASS_$_<name>` (and `OBJC_METACLASS_$_<name>` when it
+    // subclasses). The gnustep ELF ABI names those objects `._OBJC_CLASS_<name>` /
+    // `._OBJC_METACLASS_<name>` (ManglePublicSymbol above), so on ELF the two
+    // spellings never meet and the consumer's link fails with `undefined reference`
+    // -- while the SAME source links fine on COFF, where the swift frontend emits an
+    // `/alternatename` directive that the linker resolves.
+    //
+    // Aliasing the Darwin name onto this TU's gnustep class object closes that, and
+    // the alias IS the registered class object, so it also (a) drags the class's
+    // archive member out of a non-whole-archived `.a` and (b) makes the classref
+    // point at the real class -- no runtime resolver needed.
+    //
+    // ⚠️ WHY THIS BELONGS IN THE COMPILER. WinCatalyst's own frameworks have carried
+    // this alias per-`@implementation` as a file-scope `.set` since lesson #263
+    // (WCSwiftObjCClassAlias.h, enforced by tools/lint-swift-objc-class-alias.sh).
+    // THIRD-PARTY ObjC has no such line and cannot be asked to grow one: an
+    // unmodified SwiftPM package (MBProgressHUD, via the readium TestApp; and
+    // examples/swiftpm-objc-smoke, which exists to represent exactly that case)
+    // therefore could not be referenced from Swift on ELF at all. Emitting it here
+    // makes every ObjC class the fork compiles importable, in-tree or not.
+    //
+    // ⚠️ The header macro must stand down when this is on, or the `.set` and this
+    // alias both define the same symbol and the assembler rejects the TU. That is
+    // what `__OBJC_GNUSTEP_DARWIN_CLASS_ALIASES__` (InitPreprocessor.cpp) is for --
+    // it is defined exactly when this code runs, so an old compiler + new header and
+    // a new compiler + old header both still produce exactly one definition.
+    if (!IsCOFF) {
+      auto emitDarwinAlias = [&](StringRef Prefix, llvm::GlobalValue *Aliasee) {
+        std::string AliasName = (llvm::Twine(Prefix) + className).str();
+        // Never shadow an existing definition -- a TU that already has this symbol
+        // (a hand-written `.set` in IR-visible form, say) keeps it.
+        if (TheModule.getNamedValue(AliasName))
+          return;
+        llvm::GlobalAlias::create(Aliasee->getValueType(), 0,
+                                  llvm::GlobalValue::ExternalLinkage, AliasName,
+                                  Aliasee, &TheModule);
+      };
+      emitDarwinAlias("OBJC_CLASS_$_", classStruct);
+      emitDarwinAlias("OBJC_METACLASS_$_", metaclass);
+    }
+
     auto classInitRef = new llvm::GlobalVariable(TheModule,
         classStruct->getType(), false, llvm::GlobalValue::ExternalLinkage,
         classStruct, ManglePublicSymbol("OBJC_INIT_CLASS_") + className);

@@ -995,6 +995,26 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
         Builder.defineMacro(
             "__OBJC_GNUSTEP_RUNTIME_ABI__",
             "1" + Twine(std::min(8U, version.getMinor().value_or(0))));
+
+      // Harmony/WinCatalyst: on ELF the gnustep-2.0+ codegen also emits
+      // DARWIN-SPELLED aliases (`OBJC_CLASS_$_<name>` / `OBJC_METACLASS_$_<name>`)
+      // onto every class object it generates, so a Swift consumer's Apple/objc4
+      // shaped classref resolves against the gnustep `._OBJC_CLASS_<name>` object.
+      // The long note lives at that site (CGObjCGNUstep2::GenerateClass in
+      // CGObjCGNU.cpp).
+      //
+      // Advertising it is load-bearing, not informational: WinCatalyst shipped the
+      // same alias per-`@implementation` first, as a file-scope `.set`
+      // (Frameworks/include/WCSwiftObjCClassAlias.h), and that macro MUST stand down
+      // when the compiler does the job -- two definitions of one symbol is a hard
+      // assembler error. Keying the header on this macro keeps every combination
+      // working: old compiler + new header (the macro emits), new compiler + old
+      // header (the compiler emits and the macro compiles out).
+      //
+      // COFF is excluded for exactly the reason the codegen excludes it: there the
+      // swift frontend emits an `/alternatename` directive itself.
+      if (version >= VersionTuple(2, 0) && !TI.getTriple().isOSBinFormatCOFF())
+        Builder.defineMacro("__OBJC_GNUSTEP_DARWIN_CLASS_ALIASES__");
     }
 
     if (LangOpts.ObjCRuntime.getKind() == ObjCRuntime::ObjFW) {
