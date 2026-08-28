@@ -1801,8 +1801,12 @@ struct CaptureFinder : ConstStmtVisitor<CaptureFinder> {
     if (E->refersToEnclosingVariableOrCapture())
       Captures.insert(ParentThis);
 
+    // ObjC 'self' and '_cmd' are ImplicitParamDecls, which
+    // isLocalVarDeclOrParm() rejects; an ivar reference in an outlined ObjC
+    // @finally reaches its 'self' through a DeclRefExpr like any local.
     const auto *D = dyn_cast<VarDecl>(E->getDecl());
-    if (D && D->isLocalVarDeclOrParm() && D->hasLocalStorage())
+    if (D && (D->isLocalVarDeclOrParm() || isa<ImplicitParamDecl>(D)) &&
+        D->hasLocalStorage())
       Captures.insert(D);
   }
 
@@ -1978,7 +1982,10 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
         recoverAddrOfEscapedLocal(ParentCGF, ParentVar, ParentFP);
     setAddrOfLocalVar(VD, Recovered);
 
-    if (isa<ImplicitParamDecl>(VD)) {
+    // Only C++ 'this' needs the CXXThisValue plumbing; other captured
+    // implicit params (ObjC 'self'/'_cmd') are reached through the
+    // LocalDeclMap entry alone.
+    if (isa<ImplicitParamDecl>(VD) && VD == ParentCGF.CXXABIThisDecl) {
       CXXABIThisAlignment = ParentCGF.CXXABIThisAlignment;
       CXXThisAlignment = ParentCGF.CXXThisAlignment;
       CXXABIThisValue = Builder.CreateLoad(Recovered, "this");
