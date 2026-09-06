@@ -4354,12 +4354,26 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
     } else if (Literal.isFloat)
       Ty = Context.FloatTy;
     else if (Literal.isLong)
-      Ty = !getLangOpts().HLSL ? Context.LongDoubleTy : Context.DoubleTy;
+      // ⚠️ MSL has NEITHER `double` NOR `long double` -- the Metal Shading
+      // Language spec defines only half/float for floating point. Metal joins
+      // HLSL here for the same reason HLSL is already here.
+      Ty = (!getLangOpts().HLSL && !getLangOpts().Metal) ? Context.LongDoubleTy
+                                                         : Context.DoubleTy;
     else if (Literal.isFloat16)
       Ty = Context.Float16Ty;
     else if (Literal.isFloat128)
       Ty = Context.Float128Ty;
-    else if (getLangOpts().HLSL)
+    else if (getLangOpts().HLSL || getLangOpts().Metal)
+      // ⚠️⚠️ AN UNSUFFIXED FLOATING LITERAL IS `float` IN MSL, NOT `double`.
+      // Without this, `1.0 - f` (f being float) promotes the whole expression to
+      // double, the SPIR-V backend emits OpTypeFloat 64 + `OpCapability Float64`,
+      // and the module then REQUIRES the shaderFloat64 device feature at runtime.
+      // Desktop GPUs and llvmpipe have it, so this was invisible for a year; MOBILE
+      // GPUs generally do not. Measured 2026-09-06 on a Mali-G615 MC2 (Android
+      // arm64): every SpriteKit pipeline whose fragment shader ran `1.0 - f` died in
+      // vkCreateGraphicsPipelines with VK_ERROR_INITIALIZATION_FAILED (-3) and no
+      // further diagnostic, while the shader that did no literal arithmetic built
+      // and drew. Isolated to one character -- `1.0` emits Float64, `1.0f` does not.
       Ty = Context.FloatTy;
     else
       Ty = Context.DoubleTy;
