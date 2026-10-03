@@ -44,7 +44,9 @@
 #include "llvm/IR/IntrinsicsSPIRV.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
+#include <cctype>
 
 using namespace clang;
 using namespace CodeGen;
@@ -145,6 +147,10 @@ bool CGMetalRuntime::isResourceRecord(QualType T) {
 }
 
 llvm::Type *CGMetalRuntime::convertResourceRecordType(QualType T) {
+  // Not a RESOURCE (no binding, an ordinary value), but the same hook: the
+  // cooperative-matrix marker record's IR type is the SPIR-V target type.
+  if (llvm::Type *CM = convertCoopMatrixRecordType(T))
+    return CM;
   if (isSamplerRecord(T))
     return llvm::TargetExtType::get(CGM.getLLVMContext(), "spirv.Sampler");
   if (isTextureRecord(T)) {
@@ -396,7 +402,11 @@ std::optional<RValue>
 CGMetalRuntime::tryEmitThreadgroupBarrier(CodeGenFunction &CGF,
                                           const CallExpr *E) {
   const auto *FD = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());
-  if (!FD || FD->getName() != "threadgroup_barrier" || E->getNumArgs() != 1)
+  // An operator / constructor callee has no simple identifier (getName()
+  // asserts on it) -- the implicit copy-assignment of a coop-matrix value
+  // arrives here as a CXXOperatorCallExpr.
+  if (!FD || !FD->getIdentifier() || FD->getName() != "threadgroup_barrier" ||
+      E->getNumArgs() != 1)
     return std::nullopt;
   const auto *NS = dyn_cast<NamespaceDecl>(FD->getDeclContext());
   if (!NS || NS->getName() != "metal")
@@ -439,6 +449,216 @@ CGMetalRuntime::tryEmitThreadgroupBarrier(CodeGenFunction &CGF,
   llvm::Value *Scope = llvm::ConstantInt::get(I32, 2);
   CGF.EmitRuntimeCall(Callee, {Scope, Scope, llvm::ConstantInt::get(I32, Sem)});
   return RValue::get(nullptr);
+}
+
+// ---- cooperative matrices (WinCatalyst extension) ---------------------------
+//
+// metal::wc_coop_matrix<T, Rows, Cols, Use> is an empty marker record; its IR
+// type is target("spirv.CooperativeMatrixKHR", T, Subgroup=3, Rows, Cols, Use)
+// and its values live in allocas of that type (clang's ordinary locals), copied
+// by emitCoopMatrixCopy. The four free functions are only declared in
+// metal_stdlib; calls are rewritten here to the SPIR-V wrapper builtins the
+// backend recognizes by demangled name (it reads the length-prefixed
+// identifier and ignores the rest of the mangling -- hence the "_wc..."
+// suffixes that keep one llvm::Function per operand-type combination):
+//   wc_coop_load<T,R,C,U>(ptr, stride, layout)  -> __spirv_CooperativeMatrixLoadKHR(ptr, layout, stride)
+//   wc_coop_store(ptr, m, stride, layout)        -> __spirv_CooperativeMatrixStoreKHR(ptr, m, layout, stride)
+//   wc_coop_mul_add(a, b, c)                     -> __spirv_CooperativeMatrixMulAddKHR(a, b, c)
+//   wc_coop_fill<T,R,C,U>(v)                     -> __spirv_CompositeConstruct(v)
+// Strides are in elements; layout 0 = row-major, 1 = column-major.
+
+static const ClassTemplateSpecializationDecl *getCoopMatrixSpec(QualType T) {
+  const RecordDecl *RD = getMetalNamespaceRecord(T);
+  if (!RD || RD->getName() != "wc_coop_matrix")
+    return nullptr;
+  return dyn_cast<ClassTemplateSpecializationDecl>(RD);
+}
+
+bool CGMetalRuntime::isCoopMatrixRecord(QualType T) {
+  return getCoopMatrixSpec(T) != nullptr;
+}
+
+llvm::Type *CGMetalRuntime::convertCoopMatrixRecordType(QualType T) {
+  const auto *Spec = getCoopMatrixSpec(T);
+  if (!Spec)
+    return nullptr;
+  const TemplateArgumentList &Args = Spec->getTemplateArgs();
+  if (Args.size() != 4)
+    return nullptr;
+  llvm::Type *ElemTy = CGM.getTypes().ConvertType(Args[0].getAsType());
+  const unsigned Rows = Args[1].getAsIntegral().getZExtValue();
+  const unsigned Cols = Args[2].getAsIntegral().getZExtValue();
+  const unsigned Use = Args[3].getAsIntegral().getZExtValue();
+  // SPIR-V Scope::Subgroup = 3 (the only scope VK_KHR_cooperative_matrix offers).
+  return llvm::TargetExtType::get(CGM.getLLVMContext(),
+                                  "spirv.CooperativeMatrixKHR", {ElemTy},
+                                  {3u, Rows, Cols, Use});
+}
+
+void CGMetalRuntime::emitCoopMatrixCopy(CodeGenFunction &CGF, LValue Dest,
+                                        LValue Src, QualType Ty) {
+  llvm::Type *MatTy = CGF.ConvertTypeForMem(Ty);
+  llvm::Value *V = CGF.Builder.CreateLoad(
+      Src.getAddress().withElementType(MatTy), "wc.coop.copy");
+  CGF.Builder.CreateStore(V, Dest.getAddress().withElementType(MatTy));
+}
+
+// Peel the by-value copy wrappers off a coop-matrix argument.
+static const Expr *peelCoopArg(const Expr *E) {
+  const Expr *Arg = E->IgnoreParenImpCasts();
+  while (true) {
+    if (const auto *CCE = dyn_cast<CXXConstructExpr>(Arg);
+        CCE && CCE->getNumArgs() >= 1)
+      Arg = CCE->getArg(0)->IgnoreParenImpCasts();
+    else if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(Arg))
+      Arg = MTE->getSubExpr()->IgnoreParenImpCasts();
+    else
+      break;
+  }
+  return Arg;
+}
+
+std::optional<RValue>
+CGMetalRuntime::tryEmitCoopMatrixCall(CodeGenFunction &CGF, const CallExpr *E,
+                                      ReturnValueSlot ReturnValue) {
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());
+  if (!FD || !FD->getIdentifier())  // operators / constructors: not ours
+    return std::nullopt;
+  StringRef Name = FD->getName();
+  if (!Name.starts_with("wc_coop_"))
+    return std::nullopt;
+  const auto *NS = dyn_cast<NamespaceDecl>(FD->getDeclContext());
+  if (!NS || NS->getName() != "metal")
+    return std::nullopt;
+
+  llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+  llvm::Type *I32 = llvm::Type::getInt32Ty(Ctx);
+  auto Fail = [&](const char *Msg) -> std::optional<RValue> {
+    CGM.Error(E->getExprLoc(), Msg);
+    return RValue::get(nullptr);
+  };
+  // A constant-expression i32 operand (the layout).
+  auto ConstI32 = [&](const Expr *A) -> llvm::Value * {
+    Expr::EvalResult R;
+    if (!A->EvaluateAsInt(R, CGM.getContext()))
+      return nullptr;
+    return llvm::ConstantInt::get(I32, R.Val.getInt().getZExtValue());
+  };
+  // A coop-matrix operand as an SSA value: a glvalue is loaded in place, a
+  // prvalue (a nested call) is materialized into a temporary first.
+  auto CoopArg = [&](const Expr *A) -> llvm::Value * {
+    const Expr *P = peelCoopArg(A);
+    QualType T = P->getType();
+    llvm::Type *MatTy = CGF.ConvertTypeForMem(T);
+    if (P->isGLValue()) {
+      LValue LV = CGF.EmitLValue(P);
+      return CGF.Builder.CreateLoad(LV.getAddress().withElementType(MatTy),
+                                    "wc.coop.arg");
+    }
+    AggValueSlot Slot = CGF.CreateAggTemp(T, "wc.coop.tmp");
+    CGF.EmitAggExpr(P, Slot);
+    return CGF.Builder.CreateLoad(Slot.getAddress().withElementType(MatTy),
+                                  "wc.coop.arg");
+  };
+  // Hand a coop-matrix result back as an aggregate: into the caller's slot
+  // when it gave one, else into a temporary.
+  auto ReturnCoop = [&](llvm::Value *V, QualType RetTy) -> RValue {
+    Address Dest = ReturnValue.isNull()
+                       ? Address(CGF.CreateMemTemp(RetTy, "wc.coop.ret"))
+                       : ReturnValue.getAddress();
+    CGF.Builder.CreateStore(V, Dest.withElementType(V->getType()));
+    return RValue::getAggregate(Dest);
+  };
+  // One llvm::Function per operand-type combination, named so the backend's
+  // demangler still reads the builtin's identifier.
+  auto Callee = [&](const char *Mangled, llvm::Type *Ret,
+                    ArrayRef<llvm::Type *> Params) -> llvm::FunctionCallee {
+    std::string N = Mangled;
+    N += "_wc";
+    for (llvm::Type *P : Params) {
+      std::string S;
+      llvm::raw_string_ostream OS(S);
+      P->print(OS, /*IsForDebug=*/false, /*NoDetails=*/true);
+      for (char Ch : S)
+        N += (isalnum((unsigned char)Ch) ? Ch : '_');
+    }
+    if (Ret && !Ret->isVoidTy()) {
+      std::string S;
+      llvm::raw_string_ostream OS(S);
+      Ret->print(OS, false, true);
+      N += "_r";
+      for (char Ch : S)
+        N += (isalnum((unsigned char)Ch) ? Ch : '_');
+    }
+    auto *FT = llvm::FunctionType::get(Ret, Params, false);
+    llvm::FunctionCallee FC = CGM.getModule().getOrInsertFunction(N, FT);
+    if (auto *Fn = dyn_cast<llvm::Function>(FC.getCallee()))
+      Fn->setConvergent();  // subgroup-collective operations
+    return FC;
+  };
+
+  if (Name == "wc_coop_load") {
+    if (E->getNumArgs() != 3)
+      return Fail("wc_coop_load takes (pointer, stride, layout)");
+    QualType RetTy = E->getType();
+    llvm::Type *MatTy = CGF.ConvertTypeForMem(RetTy);
+    if (!isa<llvm::TargetExtType>(MatTy))
+      return Fail("wc_coop_load's result must be a wc_coop_matrix");
+    llvm::Value *Ptr = CGF.EmitScalarExpr(E->getArg(0));
+    llvm::Value *Stride = CGF.Builder.CreateZExtOrTrunc(
+        CGF.EmitScalarExpr(E->getArg(1)), I32);
+    llvm::Value *Layout = ConstI32(E->getArg(2));
+    if (!Layout)
+      return Fail("wc_coop_load's layout must be a constant");
+    llvm::FunctionCallee F =
+        Callee("_Z32__spirv_CooperativeMatrixLoadKHR", MatTy,
+               {Ptr->getType(), I32, I32});
+    llvm::Value *V = CGF.EmitRuntimeCall(F, {Ptr, Layout, Stride}, "wc.coop.load");
+    return ReturnCoop(V, RetTy);
+  }
+  if (Name == "wc_coop_store") {
+    if (E->getNumArgs() != 4)
+      return Fail("wc_coop_store takes (pointer, matrix, stride, layout)");
+    llvm::Value *Ptr = CGF.EmitScalarExpr(E->getArg(0));
+    llvm::Value *Mat = CoopArg(E->getArg(1));
+    llvm::Value *Stride = CGF.Builder.CreateZExtOrTrunc(
+        CGF.EmitScalarExpr(E->getArg(2)), I32);
+    llvm::Value *Layout = ConstI32(E->getArg(3));
+    if (!Layout)
+      return Fail("wc_coop_store's layout must be a constant");
+    llvm::FunctionCallee F =
+        Callee("_Z33__spirv_CooperativeMatrixStoreKHR",
+               llvm::Type::getVoidTy(Ctx),
+               {Ptr->getType(), Mat->getType(), I32, I32});
+    CGF.EmitRuntimeCall(F, {Ptr, Mat, Layout, Stride});
+    return RValue::get(nullptr);
+  }
+  if (Name == "wc_coop_mul_add") {
+    if (E->getNumArgs() != 3)
+      return Fail("wc_coop_mul_add takes (a, b, c)");
+    llvm::Value *A = CoopArg(E->getArg(0));
+    llvm::Value *B = CoopArg(E->getArg(1));
+    llvm::Value *C = CoopArg(E->getArg(2));
+    llvm::FunctionCallee F =
+        Callee("_Z34__spirv_CooperativeMatrixMulAddKHR", C->getType(),
+               {A->getType(), B->getType(), C->getType()});
+    llvm::Value *V = CGF.EmitRuntimeCall(F, {A, B, C}, "wc.coop.mad");
+    return ReturnCoop(V, E->getType());
+  }
+  if (Name == "wc_coop_fill") {
+    if (E->getNumArgs() != 1)
+      return Fail("wc_coop_fill takes (value)");
+    QualType RetTy = E->getType();
+    llvm::Type *MatTy = CGF.ConvertTypeForMem(RetTy);
+    if (!isa<llvm::TargetExtType>(MatTy))
+      return Fail("wc_coop_fill's result must be a wc_coop_matrix");
+    llvm::Value *Val = CGF.EmitScalarExpr(E->getArg(0));
+    llvm::FunctionCallee F =
+        Callee("_Z26__spirv_CompositeConstruct", MatTy, {Val->getType()});
+    llvm::Value *V = CGF.EmitRuntimeCall(F, {Val}, "wc.coop.fill");
+    return ReturnCoop(V, RetTy);
+  }
+  return Fail("unknown wc_coop_* function");
 }
 
 // Load an input-interface value for one stage_in field / builtin parameter.

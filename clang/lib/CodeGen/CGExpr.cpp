@@ -6758,6 +6758,11 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
     if (std::optional<RValue> R =
             CGM.getMetalRuntime().tryEmitThreadgroupBarrier(*this, E))
       return *R;
+    // metal::wc_coop_{load,store,mul_add,fill} -> the cooperative-matrix
+    // wrapper builtins (results land in ReturnValue when the caller gave one).
+    if (std::optional<RValue> R =
+            CGM.getMetalRuntime().tryEmitCoopMatrixCall(*this, E, ReturnValue))
+      return *R;
   }
 
   llvm::CallBase *CallOrInvokeStorage;

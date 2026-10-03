@@ -31,6 +31,7 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_CGMETALRUNTIME_H
 #define LLVM_CLANG_LIB_CODEGEN_CGMETALRUNTIME_H
 
+#include "CGCall.h"  // ReturnValueSlot
 #include "CGValue.h"
 #include "clang/AST/Decl.h"
 #include "llvm/ADT/DenseMap.h"
@@ -77,6 +78,27 @@ public:
   /// Returns std::nullopt when E is some other call.
   std::optional<RValue> tryEmitThreadgroupBarrier(CodeGenFunction &CGF,
                                                   const CallExpr *E);
+
+  /// WinCatalyst cooperative matrices (the tensor-core path of the Core AI
+  /// Metal delegate): metal::wc_coop_matrix<T, Rows, Cols, Use> is an EMPTY
+  /// marker record in the AST and `target("spirv.CooperativeMatrixKHR", T,
+  /// Subgroup, Rows, Cols, Use)` in IR. True if T is that record.
+  static bool isCoopMatrixRecord(QualType T);
+
+  /// The record's IR type (above), nullptr if T is not a coop-matrix record.
+  llvm::Type *convertCoopMatrixRecordType(QualType T);
+
+  /// A copy of a coop-matrix value: load + store of the target type (the
+  /// empty-record copy would be a no-op, a memcpy is not logical SPIR-V).
+  void emitCoopMatrixCopy(CodeGenFunction &CGF, LValue Dest, LValue Src,
+                          QualType Ty);
+
+  /// metal::wc_coop_{load,store,mul_add,fill} -> the SPIR-V wrapper builtins
+  /// (__spirv_CooperativeMatrix{Load,Store,MulAdd}KHR, __spirv_
+  /// CompositeConstruct). Returns std::nullopt when E is some other call.
+  std::optional<RValue> tryEmitCoopMatrixCall(CodeGenFunction &CGF,
+                                              const CallExpr *E,
+                                              ReturnValueSlot ReturnValue);
 
   /// True if PD is a [[buffer(N)]] parameter of a Metal entry function.
   static bool isBufferParam(const ParmVarDecl *PD);

@@ -163,6 +163,47 @@ constexpr mem_flags operator|(mem_flags a, mem_flags b) {
 }
 void threadgroup_barrier(mem_flags flags) __attribute__((convergent));
 
+// MSL `half` is IEEE binary16 (clang's _Float16 on the SPIR-V target).
+typedef _Float16 half;
+typedef __attribute__((__ext_vector_type__(2))) half half2;
+typedef __attribute__((__ext_vector_type__(4))) half half4;
+
+// ---------------------------------------------------------------------------
+// Cooperative matrices -- a WINCATALYST EXTENSION (the Core AI Metal delegate's
+// tensor-core path), NOT Apple's simdgroup_matrix: Apple's tiles are 8x8, and
+// no desktop VK_KHR_cooperative_matrix implementation offers an 8x8x8 shape
+// (the RTX 3050 reports f16 x f16 -> f16/f32 at 16x16x16, 16x8x16, 16x8x8 and
+// int8 at 16x16x32 / 16x8x32). A kernel asks the device for its shapes and is
+// written against them. wc_coop_matrix<T, Rows, Cols, Use> is an empty marker
+// record whose IR type is the SPIR-V cooperative-matrix type; the functions
+// below are declared only -- CGMetalRuntime rewrites each call to the
+// OpCooperativeMatrix*KHR wrapper builtins. Values copy like any local.
+// Use: 0 = A, 1 = B, 2 = accumulator. Strides are in ELEMENTS. Layout:
+// 0 = row-major, 1 = column-major (a constant at the call).
+enum { wc_coop_use_a = 0, wc_coop_use_b = 1, wc_coop_use_accumulator = 2 };
+enum { wc_coop_row_major = 0, wc_coop_col_major = 1 };
+
+template <typename T, int Rows, int Cols, int Use> struct wc_coop_matrix {};
+
+template <typename T, int Rows, int Cols, int Use>
+wc_coop_matrix<T, Rows, Cols, Use> wc_coop_load(const device T* p, uint stride, int layout);
+template <typename T, int Rows, int Cols, int Use>
+wc_coop_matrix<T, Rows, Cols, Use> wc_coop_load(const threadgroup T* p, uint stride, int layout);
+
+template <typename T, int Rows, int Cols, int Use>
+void wc_coop_store(device T* p, wc_coop_matrix<T, Rows, Cols, Use> m, uint stride, int layout);
+template <typename T, int Rows, int Cols, int Use>
+void wc_coop_store(threadgroup T* p, wc_coop_matrix<T, Rows, Cols, Use> m, uint stride, int layout);
+
+// c + a * b: A is M x K (use 0), B is K x N (use 1), C/result M x N (use 2).
+template <typename TC, typename TA, typename TB, int M, int N, int K>
+wc_coop_matrix<TC, M, N, 2> wc_coop_mul_add(wc_coop_matrix<TA, M, K, 0> a,
+                                            wc_coop_matrix<TB, K, N, 1> b,
+                                            wc_coop_matrix<TC, M, N, 2> c);
+
+template <typename T, int Rows, int Cols, int Use>
+wc_coop_matrix<T, Rows, Cols, Use> wc_coop_fill(T value);
+
 } // namespace metal
 
 #endif

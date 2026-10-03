@@ -130,6 +130,8 @@ def : DemangledBuiltin<"__spirv_Select", OpenCL_std, Select, 3, 3>;
 
 // Composite Construct builtin record:
 def : DemangledBuiltin<"__spirv_CompositeConstruct", OpenCL_std, Construct, 1, 0>;
+// WinCatalyst (-x metal, GLSL.std.450 lookup): metal::wc_coop_fill's splat.
+def : DemangledBuiltin<"__spirv_CompositeConstruct", GLSL_std_450, Construct, 1, 0>;
 
 //===----------------------------------------------------------------------===//
 // Class defining an extended builtin record used for lowering into an
@@ -712,6 +714,13 @@ defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixLoadKHR", OpenCL_std, Co
 defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixStoreKHR", OpenCL_std, CoopMatr, 3, 5, OpCooperativeMatrixStoreKHR>;
 defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixMulAddKHR", OpenCL_std, CoopMatr, 3, 4, OpCooperativeMatrixMulAddKHR>;
 defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixLengthKHR", OpenCL_std, CoopMatr, 1, 1, OpCooperativeMatrixLengthKHR>;
+// WinCatalyst (-x metal, a Vulkan module -> GLSL.std.450 lookup): the same
+// wrapper ops, so metal::wc_coop_* reaches OpCooperativeMatrix*KHR (see the
+// __spirv_ControlBarrier note above for why the set matters).
+defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixLoadKHR", GLSL_std_450, CoopMatr, 2, 4, OpCooperativeMatrixLoadKHR>;
+defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixStoreKHR", GLSL_std_450, CoopMatr, 3, 5, OpCooperativeMatrixStoreKHR>;
+defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixMulAddKHR", GLSL_std_450, CoopMatr, 3, 4, OpCooperativeMatrixMulAddKHR>;
+defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixLengthKHR", GLSL_std_450, CoopMatr, 1, 1, OpCooperativeMatrixLengthKHR>;
 
 // Cooperative Matrix Intel builtin records:
 defm : DemangledNativeBuiltin<"__spirv_CooperativeMatrixPrefetchINTEL", OpenCL_std, CoopMatr, 5, 7, OpCooperativeMatrixPrefetchINTEL>;

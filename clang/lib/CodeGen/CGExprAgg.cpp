@@ -13,6 +13,7 @@
 #include "CGCXXABI.h"
 #include "CGDebugInfo.h"
 #include "CGHLSLRuntime.h"
+#include "CGMetalRuntime.h"
 #include "CGObjCRuntime.h"
 #include "CGRecordLayout.h"
 #include "CodeGenFunction.h"
@@ -3151,6 +3152,16 @@ void CodeGenFunction::EmitAggregateCopy(LValue Dest, LValue Src, QualType Ty,
 
   Address DestPtr = Dest.getAddress();
   Address SrcPtr = Src.getAddress();
+
+  // Metal cooperative-matrix values (metal::wc_coop_matrix<T, R, C, Use>) are
+  // EMPTY records in the AST but SPIR-V cooperative-matrix target types in IR;
+  // a copy is a load + store of that type -- never the empty-class no-op below,
+  // never a memcpy (the CUDA builtin-surface precedent further down).
+  if (getLangOpts().Metal &&
+      CGMetalRuntime::isCoopMatrixRecord(Ty)) {
+    CGM.getMetalRuntime().emitCoopMatrixCopy(*this, Dest, Src, Ty);
+    return;
+  }
 
   if (getLangOpts().CPlusPlus) {
     if (const RecordType *RT = Ty->getAs<RecordType>()) {
