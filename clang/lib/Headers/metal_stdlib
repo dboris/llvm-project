@@ -178,22 +178,26 @@ typedef __attribute__((__ext_vector_type__(4))) half half4;
 // record whose IR type is the SPIR-V cooperative-matrix type; the functions
 // below are declared only -- CGMetalRuntime rewrites each call to the
 // OpCooperativeMatrix*KHR wrapper builtins. Values copy like any local.
-// Use: 0 = A, 1 = B, 2 = accumulator. Strides are in ELEMENTS. Layout:
-// 0 = row-major, 1 = column-major (a constant at the call).
+// Use: 0 = A, 1 = B, 2 = accumulator. Layout: 0 = row-major, 1 = column-major
+// (a constant at the call). The pointer's element type E need not be the
+// matrix's T: the stride (and the pointer) are in units of E -- the
+// SPV_KHR_cooperative_matrix rule. So a tile staged in threadgroup memory as
+// uint4 (8 halves, filled by 16-byte loads) loads straight into a half
+// matrix with the stride in uint4s; with E == T the stride is in elements.
 enum { wc_coop_use_a = 0, wc_coop_use_b = 1, wc_coop_use_accumulator = 2 };
 enum { wc_coop_row_major = 0, wc_coop_col_major = 1 };
 
 template <typename T, int Rows, int Cols, int Use> struct wc_coop_matrix {};
 
-template <typename T, int Rows, int Cols, int Use>
-wc_coop_matrix<T, Rows, Cols, Use> wc_coop_load(const device T* p, uint stride, int layout);
-template <typename T, int Rows, int Cols, int Use>
-wc_coop_matrix<T, Rows, Cols, Use> wc_coop_load(const threadgroup T* p, uint stride, int layout);
+template <typename T, int Rows, int Cols, int Use, typename E>
+wc_coop_matrix<T, Rows, Cols, Use> wc_coop_load(const device E* p, uint stride, int layout);
+template <typename T, int Rows, int Cols, int Use, typename E>
+wc_coop_matrix<T, Rows, Cols, Use> wc_coop_load(const threadgroup E* p, uint stride, int layout);
 
-template <typename T, int Rows, int Cols, int Use>
-void wc_coop_store(device T* p, wc_coop_matrix<T, Rows, Cols, Use> m, uint stride, int layout);
-template <typename T, int Rows, int Cols, int Use>
-void wc_coop_store(threadgroup T* p, wc_coop_matrix<T, Rows, Cols, Use> m, uint stride, int layout);
+template <typename T, int Rows, int Cols, int Use, typename E>
+void wc_coop_store(device E* p, wc_coop_matrix<T, Rows, Cols, Use> m, uint stride, int layout);
+template <typename T, int Rows, int Cols, int Use, typename E>
+void wc_coop_store(threadgroup E* p, wc_coop_matrix<T, Rows, Cols, Use> m, uint stride, int layout);
 
 // c + a * b: A is M x K (use 0), B is K x N (use 1), C/result M x N (use 2).
 template <typename TC, typename TA, typename TB, int M, int N, int K>

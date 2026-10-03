@@ -278,11 +278,16 @@ class SPIRVLegalizePointerCast : public FunctionPass {
 
     auto *S_VT = dyn_cast<FixedVectorType>(FromTy);
     auto *D_ST = dyn_cast<StructType>(ToTy);
+    auto *D_AT = dyn_cast<ArrayType>(ToTy);
     auto *D_VT = dyn_cast<FixedVectorType>(ToTy);
 
     B.SetInsertPoint(BadStore);
-    if (D_ST && isTypeFirstElementAggregate(FromTy, D_ST))
-      storeToFirstValueAggregate(B, Src, Dst, D_ST, Alignment);
+    // Harmony Metal: an ARRAY destination too -- `threadgroup uint4 t[R][C];
+    // t[r][0] = v;` reaches here as a store of the element through a pointer
+    // deduced as the whole row (the all-zero trailing GEP index was folded),
+    // and was UNREACHABLE. The loads above already descend arrays.
+    if ((D_ST || D_AT) && isTypeFirstElementAggregate(FromTy, ToTy))
+      storeToFirstValueAggregate(B, Src, Dst, ToTy, Alignment);
     else if (D_VT && S_VT)
       storeVectorFromVector(B, Src, Dst, Alignment);
     else if (D_VT && !S_VT && FromTy == D_VT->getElementType())

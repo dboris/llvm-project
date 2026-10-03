@@ -2244,6 +2244,55 @@ static bool generateCoopMatrInst(const SPIRV::IncomingCall *Call,
         .addUse(CoopMatrType->getOperand(0).getReg());
     return true;
   }
+  // WinCatalyst: with the Shader capability a cooperative-matrix load/store
+  // pointer must point to a scalar or vector -- its element is the unit of the
+  // stride. A pointer to the FIRST element of an array row (MSL
+  // `&tile[r][0]`) reaches us typed as a pointer to the whole ROW: the
+  // all-zero trailing GEP indices are folded away and the pointee is then
+  // deduced from the remaining GEP. The module was still accepted by the
+  // driver, which measured the stride in rows and loaded garbage. An
+  // aggregate pointee is never valid here and only zero indices can have been
+  // folded, so descend through element 0 to the first scalar or vector:
+  // exactly the address and element type the source named.
+  const auto *ST =
+      static_cast<const SPIRVSubtarget *>(&MIRBuilder.getMF().getSubtarget());
+  if (ST->isShader() && (Opcode == SPIRV::OpCooperativeMatrixLoadKHR ||
+                         Opcode == SPIRV::OpCooperativeMatrixStoreKHR)) {
+    SPIRVType *PtrTy = GR->getSPIRVTypeForVReg(Call->Arguments[0]);
+    if (PtrTy && PtrTy->getOpcode() == SPIRV::OpTypePointer) {
+      SPIRVType *Elem = GR->getPointeeType(PtrTy);
+      unsigned Depth = 0;
+      while (Elem && (Elem->getOpcode() == SPIRV::OpTypeArray ||
+                      Elem->getOpcode() == SPIRV::OpTypeRuntimeArray ||
+                      Elem->getOpcode() == SPIRV::OpTypeStruct)) {
+        // Operand 1 is the element type (arrays) / the first member (structs).
+        Elem = GR->getSPIRVTypeForVReg(Elem->getOperand(1).getReg());
+        ++Depth;
+      }
+      if (Depth > 0 && Elem) {
+        SPIRVType *ElemPtrTy = GR->getOrCreateSPIRVPointerType(
+            Elem, MIRBuilder, GR->getPointerStorageClass(PtrTy));
+        Register ElemPtr = createVirtualRegister(ElemPtrTy, GR, MIRBuilder);
+        SPIRVType *I32Ty = GR->getOrCreateSPIRVIntegerType(32, MIRBuilder);
+        Register Zero = GR->buildConstantInt(0, MIRBuilder, I32Ty, true,
+                                             /*ZeroAsNull=*/false);
+        auto MIB = MIRBuilder.buildInstr(SPIRV::OpInBoundsAccessChain)
+                       .addDef(ElemPtr)
+                       .addUse(GR->getSPIRVTypeID(ElemPtrTy))
+                       .addUse(Call->Arguments[0]);
+        for (unsigned I = 0; I < Depth; ++I)
+          MIB.addUse(Zero);
+        SmallVector<Register, 8> Args(Call->Arguments.begin(),
+                                      Call->Arguments.end());
+        Args[0] = ElemPtr;
+        SPIRV::IncomingCall Fixed(Call->BuiltinName, Call->Builtin,
+                                  Call->ReturnRegister, Call->ReturnType,
+                                  Args);
+        return buildOpFromWrapper(MIRBuilder, Opcode, &Fixed,
+                                  IsSet ? TypeReg : Register(0), ImmArgs);
+      }
+    }
+  }
   return buildOpFromWrapper(MIRBuilder, Opcode, Call,
                             IsSet ? TypeReg : Register(0), ImmArgs);
 }
