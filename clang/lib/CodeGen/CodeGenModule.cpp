@@ -2712,8 +2712,8 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
   // functions are handled by CGMetalRuntime::emitEntryFunction, which folds
   // the user function into its void() wrapper).
   if ((getLangOpts().HLSL ||
-       (getLangOpts().Metal && !D->hasAttr<MetalVertexAttr>() &&
-        !D->hasAttr<MetalFragmentAttr>())) &&
+       (getLangOpts().Metal &&
+        !CGMetalRuntime::isEntryFunction(dyn_cast<FunctionDecl>(D)))) &&
       !F->hasFnAttribute(llvm::Attribute::NoInline) &&
       !D->hasAttr<NoInlineAttr>()) {
     B.addAttribute(llvm::Attribute::AlwaysInline);
@@ -3807,8 +3807,7 @@ bool CodeGenModule::MustBeEmitted(const ValueDecl *Global) {
   // helper is dead code the backend must never see.
   if (LangOpts.Metal)
     if (const auto *FD = dyn_cast<FunctionDecl>(Global);
-        FD && !FD->hasAttr<MetalVertexAttr>() &&
-        !FD->hasAttr<MetalFragmentAttr>())
+        FD && !CGMetalRuntime::isEntryFunction(FD))
       return false;
 
   return getContext().DeclMustBeEmitted(Global);
@@ -4036,9 +4035,7 @@ void CodeGenModule::EmitGlobal(GlobalDecl GD) {
   if (LangOpts.Metal) {
     if (const auto *FD = dyn_cast<FunctionDecl>(Global)) {
       const std::string &Entry = getTarget().getTargetOpts().MetalEntry;
-      if (!Entry.empty() &&
-          (FD->hasAttr<MetalVertexAttr>() ||
-           FD->hasAttr<MetalFragmentAttr>()) &&
+      if (!Entry.empty() && CGMetalRuntime::isEntryFunction(FD) &&
           FD->getName() != Entry)
         return;
     }

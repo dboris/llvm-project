@@ -145,6 +145,24 @@ template <typename T> struct texture2d {
 // texture2d; accept both).
 template <typename T> using texture2D = texture2d<T>;
 
+// ---------------------------------------------------------------------------
+// Compute (kernel) support. `threadgroup_barrier` is only DECLARED: a call to
+// it is lowered by CGMetalRuntime to OpControlBarrier(Workgroup, Workgroup,
+// AcquireRelease | the storage classes the flags name), so the flags must be a
+// constant expression at the call (they always are in MSL practice). The
+// numeric values are Apple's; `|` composes them as MSL allows.
+enum class mem_flags : int {
+  mem_none = 0,
+  mem_device = 1,
+  mem_threadgroup = 2,
+  mem_texture = 4,
+  mem_threadgroup_imageblock = 8,
+};
+constexpr mem_flags operator|(mem_flags a, mem_flags b) {
+  return mem_flags((int)a | (int)b);
+}
+void threadgroup_barrier(mem_flags flags) __attribute__((convergent));
+
 } // namespace metal
 
 #endif

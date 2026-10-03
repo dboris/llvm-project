@@ -6753,6 +6753,11 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
       if (std::optional<RValue> R =
               CGM.getMetalRuntime().tryEmitMatrixVectorMul(*this, OCE))
         return *R;
+    // metal::threadgroup_barrier(mem_flags) -> OpControlBarrier (the stdlib
+    // only declares it; its memory-semantics operand must be a literal).
+    if (std::optional<RValue> R =
+            CGM.getMetalRuntime().tryEmitThreadgroupBarrier(*this, E))
+      return *R;
   }
 
   llvm::CallBase *CallOrInvokeStorage;

@@ -222,8 +222,14 @@ void CodeGenFunction::EmitVarDecl(const VarDecl &D) {
     return EmitStaticVarDecl(D, Linkage);
   }
 
-  if (D.getType().getAddressSpace() == LangAS::opencl_local)
+  if (D.getType().getAddressSpace() == LangAS::opencl_local) {
+    // Metal `threadgroup` locals take OpenCL's __local shape -- a static in the
+    // Workgroup storage class -- without the OpenCL runtime object (there is
+    // none under -x metal; CGOpenCLRuntime's body is exactly this call).
+    if (getLangOpts().Metal)
+      return EmitStaticVarDecl(D, llvm::GlobalValue::InternalLinkage);
     return CGM.getOpenCLRuntime().EmitWorkGroupLocalVarDecl(*this, D);
+  }
 
   assert(D.hasLocalStorage());
   return EmitAutoVarDecl(D);

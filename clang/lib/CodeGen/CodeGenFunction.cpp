@@ -1285,8 +1285,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   }
 
   if (FD && getLangOpts().Metal) {
-    // Metal vertex/fragment entry points get a void() interface wrapper.
-    if (FD->hasAttr<MetalVertexAttr>() || FD->hasAttr<MetalFragmentAttr>())
+    // Metal vertex/fragment/kernel entry points get a void() interface wrapper.
+    if (CGMetalRuntime::isEntryFunction(FD))
       CGM.getMetalRuntime().emitEntryFunction(FD, Fn);
   }
 

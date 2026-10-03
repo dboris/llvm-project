@@ -5293,6 +5293,61 @@ def MetalSamplerBinding : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+// The compute entry qualifier. Source spells it `kernel` (tok::kw_kernel under
+// KEYMETAL); the parser files the parsed attribute under the name below because
+// the keyword matcher cannot hold "kernel" twice -- DeviceKernelAttr owns that
+// key for OpenCL (tablegen refuses duplicate keyword spellings).
+def MetalKernel : InheritableAttr {
+  let Spellings = [CustomKeyword<"metal_kernel">];
+  let Subjects = SubjectList<[Function]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+// Kernel parameter attributes: the thread-position family. Each marshals a
+// SPIR-V compute BuiltIn onto a `uint` / `uint2` / `uint3` parameter in the
+// GLCompute entry wrapper (CGMetalRuntime).
+def MetalThreadPositionInGrid : InheritableAttr {
+  let Spellings = [CXX11<"", "thread_position_in_grid", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalThreadPositionInThreadgroup : InheritableAttr {
+  let Spellings = [CXX11<"", "thread_position_in_threadgroup", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalThreadgroupPositionInGrid : InheritableAttr {
+  let Spellings = [CXX11<"", "threadgroup_position_in_grid", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalThreadIndexInThreadgroup : InheritableAttr {
+  let Spellings = [CXX11<"", "thread_index_in_threadgroup", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def MetalThreadgroupsPerGrid : InheritableAttr {
+  let Spellings = [CXX11<"", "threadgroups_per_grid", 202607>];
+  let Subjects = SubjectList<[ParmVar]>;
+  let LangOpts = [Metal];
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
 def RandomizeLayout : InheritableAttr {
   let Spellings = [GCC<"randomize_layout">];
   let Subjects = SubjectList<[Record]>;

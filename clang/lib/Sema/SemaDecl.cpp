@@ -9565,8 +9565,14 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
   // This includes arrays of objects with address space qualifiers, but not
   // automatic variables that point to other address spaces.
   // ISO/IEC TR 18037 S5.1.2
-  if (!getLangOpts().OpenCL && NewVD->hasLocalStorage() &&
-      T.getAddressSpace() != LangAS::Default) {
+  // Metal: a `threadgroup`-qualified local (opencl_local, SPIR-V Workgroup) is
+  // the MSL spelling of workgroup-shared memory inside a kernel; it is emitted
+  // like OpenCL's `__local` (a static in the Workgroup storage class, CGDecl).
+  // The other address spaces stay rejected on locals.
+  const bool MetalThreadgroupLocal =
+      getLangOpts().Metal && T.getAddressSpace() == LangAS::opencl_local;
+  if (!getLangOpts().OpenCL && !MetalThreadgroupLocal &&
+      NewVD->hasLocalStorage() && T.getAddressSpace() != LangAS::Default) {
     Diag(NewVD->getLocation(), diag::err_as_qualified_auto_decl) << 0;
     NewVD->setInvalidDecl();
     return;

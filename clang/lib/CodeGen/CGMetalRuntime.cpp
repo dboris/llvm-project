@@ -87,9 +87,32 @@ static constexpr unsigned kBuiltInFragCoord = 15;
 // SPIR-V StorageClass::StorageBuffer, encoded in the VulkanBuffer type.
 static constexpr unsigned kStorageBufferSC = 12;
 
+bool CGMetalRuntime::isEntryFunction(const FunctionDecl *FD) {
+  return FD && (FD->hasAttr<MetalVertexAttr>() ||
+                FD->hasAttr<MetalFragmentAttr>() ||
+                FD->hasAttr<MetalKernelAttr>());
+}
+
 unsigned CGMetalRuntime::stageDescriptorSet(const FunctionDecl *FD) {
-  // <Metal/MTLLibrary.h>: descriptor set 0 = vertex stage, 1 = fragment.
-  return FD->hasAttr<MetalVertexAttr>() ? 0u : 1u;
+  // <Metal/MTLLibrary.h>: descriptor set 0 = vertex stage, 1 = fragment; a
+  // kernel's compute pipeline layout has the single set 0 (same offsets).
+  return FD->hasAttr<MetalFragmentAttr>() ? 1u : 0u;
+}
+
+// A [[buffer(N)]] parameter's SSBO is writable when it names `device` memory
+// that is not const-qualified (`device float* out`); `constant` buffers and
+// `const device` views stay NonWritable (the backend decorates them so).
+static bool isWritableBufferParam(const ParmVarDecl *PD) {
+  QualType T = PD->getType();
+  QualType Pointee;
+  if (const auto *RefTy = T->getAs<clang::ReferenceType>())
+    Pointee = RefTy->getPointeeType();
+  else if (const auto *PtrTy = T->getAs<clang::PointerType>())
+    Pointee = PtrTy->getPointeeType();
+  else
+    return false;
+  return Pointee.getAddressSpace() == LangAS::opencl_global &&
+         !Pointee.isConstQualified();
 }
 
 bool CGMetalRuntime::isBufferParam(const ParmVarDecl *PD) {
@@ -165,7 +188,7 @@ llvm::Value *CGMetalRuntime::emitBufferElementPtr(llvm::IRBuilderBase &B,
   auto *RuntimeArrTy = llvm::ArrayType::get(ElemLLVMTy, 0);
   auto *HandleTy = llvm::TargetExtType::get(
       CGM.getLLVMContext(), "spirv.VulkanBuffer", {RuntimeArrTy},
-      {kStorageBufferSC, /*Writable=*/0});
+      {kStorageBufferSC, /*Writable=*/isWritableBufferParam(PD) ? 1u : 0u});
 
   llvm::Value *Handle = emitHandleFromBinding(B, HandleTy, PD, Set, Binding);
 
@@ -369,6 +392,55 @@ CGMetalRuntime::tryEmitMatrixVectorMul(CodeGenFunction &CGF,
       MulFn, {Cols[0], Cols[1], Cols[2], Cols[3], Vec}));
 }
 
+std::optional<RValue>
+CGMetalRuntime::tryEmitThreadgroupBarrier(CodeGenFunction &CGF,
+                                          const CallExpr *E) {
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());
+  if (!FD || FD->getName() != "threadgroup_barrier" || E->getNumArgs() != 1)
+    return std::nullopt;
+  const auto *NS = dyn_cast<NamespaceDecl>(FD->getDeclContext());
+  if (!NS || NS->getName() != "metal")
+    return std::nullopt;
+
+  // The flags select which storage classes the barrier orders; the operand is
+  // an OpControlBarrier literal, so it has to be a constant here.
+  Expr::EvalResult Flags;
+  if (!E->getArg(0)->EvaluateAsInt(Flags, CGM.getContext())) {
+    CGM.Error(E->getExprLoc(),
+              "the mem_flags argument of threadgroup_barrier must be a "
+              "constant in this implementation");
+    return RValue::get(nullptr);
+  }
+  const uint64_t F = Flags.Val.getInt().getZExtValue();
+  // SPIR-V MemorySemantics: AcquireRelease 0x8, UniformMemory 0x40 (the
+  // StorageBuffer class in a Vulkan shader = MSL `device`), WorkgroupMemory
+  // 0x100 (`threadgroup`), ImageMemory 0x800 (`texture`). mem_none still
+  // synchronizes execution. Scope: Workgroup = 2 for both operands.
+  unsigned Sem = 0x8;
+  if (F & 1)
+    Sem |= 0x40;
+  if (F & 2)
+    Sem |= 0x100;
+  if (F & 4)
+    Sem |= 0x800;
+
+  // `__spirv_ControlBarrier(int, int, int)`: the SPIR-V backend recognizes the
+  // demangled name and emits OpControlBarrier with the operands as given
+  // (SPIRVBuiltins "__spirv_ControlBarrier", a wrapper op); the HLSL intrinsic
+  // (group_memory_barrier_with_group_sync) would drop the storage-class bits.
+  llvm::LLVMContext &Ctx = CGM.getLLVMContext();
+  llvm::Type *I32 = llvm::Type::getInt32Ty(Ctx);
+  auto *FT = llvm::FunctionType::get(llvm::Type::getVoidTy(Ctx),
+                                     {I32, I32, I32}, false);
+  llvm::FunctionCallee Callee =
+      CGM.getModule().getOrInsertFunction("_Z22__spirv_ControlBarrieriii", FT);
+  if (auto *Fn = dyn_cast<llvm::Function>(Callee.getCallee()))
+    Fn->setConvergent();
+  llvm::Value *Scope = llvm::ConstantInt::get(I32, 2);
+  CGF.EmitRuntimeCall(Callee, {Scope, Scope, llvm::ConstantInt::get(I32, Sem)});
+  return RValue::get(nullptr);
+}
+
 // Load an input-interface value for one stage_in field / builtin parameter.
 static llvm::Value *loadInterfaceInput(IRBuilder<> &B, llvm::Module &M,
                                        llvm::Type *Ty, const Twine &Name,
@@ -383,6 +455,7 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
   llvm::Module &M = CGM.getModule();
   llvm::LLVMContext &Ctx = M.getContext();
   bool IsVertex = FD->hasAttr<MetalVertexAttr>();
+  bool IsKernel = FD->hasAttr<MetalKernelAttr>();
   unsigned Set = stageDescriptorSet(FD);
 
   auto *EntryTy = llvm::FunctionType::get(llvm::Type::getVoidTy(Ctx), false);
@@ -395,7 +468,19 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
   EntryFn->setAttributes(NewAttrs);
   EntryFn->addFnAttr("hlsl.shader",
                      llvm::Triple::getEnvironmentTypeName(
-                         IsVertex ? llvm::Triple::Vertex : llvm::Triple::Pixel));
+                         IsKernel   ? llvm::Triple::Compute
+                         : IsVertex ? llvm::Triple::Vertex
+                                    : llvm::Triple::Pixel));
+  if (IsKernel) {
+    // Vulkan needs a LocalSize in the module; Metal chooses
+    // threadsPerThreadgroup at DISPATCH time. Emit a 1,1,1 placeholder
+    // (OpExecutionMode LocalSize 1 1 1) that the WinCatalyst Metal runtime
+    // rewrites to the dispatch's size when it builds the VkPipeline for it
+    // (<Metal/MTLLibrary.h>, the compute ABI). [[threads_per_threadgroup]] is
+    // therefore NOT offered: the WorkgroupSize BuiltIn would read the
+    // placeholder, and Vulkan requires it on a constant anyway.
+    EntryFn->addFnAttr("hlsl.numthreads", "1,1,1");
+  }
   // NEVER OptimizeNone, even at O0: the SPIR-V backend's structurizer
   // contract is RegToMem (demote cross-block values) -> structurize ->
   // PromoteMemoryToRegister, and the promote step skips optnone functions
@@ -529,10 +614,57 @@ void CGMetalRuntime::emitEntryFunction(const FunctionDecl *FD,
       }
       continue;
     }
+    // Kernel thread-position parameters: `uint` / `uint2` / `uint3` loaded
+    // from the compute BuiltIns component by component (the HLSL
+    // SV_DispatchThreadID shape -- the intrinsics are per-component i32).
+    {
+      std::optional<llvm::Intrinsic::ID> VecID;
+      if (PD->hasAttr<MetalThreadPositionInGridAttr>())
+        VecID = llvm::Intrinsic::spv_thread_id;
+      else if (PD->hasAttr<MetalThreadPositionInThreadgroupAttr>())
+        VecID = llvm::Intrinsic::spv_thread_id_in_group;
+      else if (PD->hasAttr<MetalThreadgroupPositionInGridAttr>())
+        VecID = llvm::Intrinsic::spv_group_id;
+      else if (PD->hasAttr<MetalThreadgroupsPerGridAttr>())
+        VecID = llvm::Intrinsic::spv_num_workgroups;
+      bool IsFlatIndex = PD->hasAttr<MetalThreadIndexInThreadgroupAttr>();
+      if (VecID || IsFlatIndex) {
+        llvm::Type *Ty = Param.getType();
+        llvm::Type *ElemTy =
+            isa<FixedVectorType>(Ty) ? cast<FixedVectorType>(Ty)->getElementType()
+                                     : Ty;
+        if (!IsKernel || !ElemTy->isIntegerTy(32) ||
+            (IsFlatIndex && Ty != ElemTy)) {
+          CGM.Error(PD->getLocation(),
+                    "Metal thread-position parameters are kernel-only and "
+                    "must be uint / uint2 / uint3 (uint for "
+                    "[[thread_index_in_threadgroup]]) in this implementation");
+          Args.emplace_back(PoisonValue::get(Ty));
+          continue;
+        }
+        if (IsFlatIndex) {
+          llvm::Function *F = CGM.getIntrinsic(
+              llvm::Intrinsic::spv_flattened_thread_id_in_group);
+          Args.push_back(B.CreateCall(F, {}, "wc.thread_index"));
+          continue;
+        }
+        llvm::Function *F = CGM.getIntrinsic(*VecID, {B.getInt32Ty()});
+        if (auto *VT = dyn_cast<FixedVectorType>(Ty)) {
+          llvm::Value *V = PoisonValue::get(VT);
+          for (unsigned I = 0; I < VT->getNumElements(); ++I)
+            V = B.CreateInsertElement(V, B.CreateCall(F, {B.getInt32(I)}),
+                                      B.getInt32(I));
+          Args.push_back(V);
+        } else {
+          Args.push_back(B.CreateCall(F, {B.getInt32(0)}, "wc.thread_pos"));
+        }
+        continue;
+      }
+    }
     CGM.Error(PD->getLocation(),
               "unsupported Metal entry parameter: expected [[vertex_id]], "
-              "[[position]], [[buffer(N)]], [[texture(N)]], [[sampler(N)]] "
-              "or [[stage_in]]");
+              "[[position]], [[buffer(N)]], [[texture(N)]], [[sampler(N)]], "
+              "[[stage_in]] or a kernel thread-position attribute");
     Args.emplace_back(PoisonValue::get(Param.getType()));
   }
 

@@ -637,6 +637,13 @@ defm : DemangledNativeBuiltin<"__spirv_AtomicUMax", OpenCL_std, Atomic, 4, 4, Op
 defm : DemangledNativeBuiltin<"barrier", OpenCL_std, Barrier, 1, 3, OpControlBarrier>;
 defm : DemangledNativeBuiltin<"work_group_barrier", OpenCL_std, Barrier, 1, 3, OpControlBarrier>;
 defm : DemangledNativeBuiltin<"__spirv_ControlBarrier", OpenCL_std, Barrier, 3, 3, OpControlBarrier>;
+// WinCatalyst (-x metal, a Vulkan module): a shader's preferred instruction set
+// is GLSL.std.450, and the lookup is keyed by (name, set) -- without this record
+// `__spirv_ControlBarrier` in a Vulkan module stays an imported external
+// function (Linkage capability, which Vulkan rejects). The wrapper op is
+// set-agnostic: metal::threadgroup_barrier lowers through it with explicit
+// scope + memory-semantics literals (clang CGMetalRuntime).
+defm : DemangledNativeBuiltin<"__spirv_ControlBarrier", GLSL_std_450, Barrier, 3, 3, OpControlBarrier>;
 
 // ICarryBorrow builtin record:
 defm : DemangledNativeBuiltin<"__spirv_IAddCarry", OpenCL_std, ICarryBorrow, 3, 3, OpIAddCarryS>;

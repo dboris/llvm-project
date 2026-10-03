@@ -1077,9 +1077,13 @@ void Parser::ParseOpenCLKernelAttributes(ParsedAttributes &attrs) {
 
 void Parser::ParseMetalFunctionQualifiers(ParsedAttributes &attrs) {
   // Treat these like attributes
-  while (Tok.isOneOf(tok::kw_vertex, tok::kw_fragment)) {
+  while (Tok.isOneOf(tok::kw_vertex, tok::kw_fragment, tok::kw_kernel)) {
     IdentifierInfo *AttrName = Tok.getIdentifierInfo();
     tok::TokenKind Kind = Tok.getKind();
+    // `kernel` files under MetalKernelAttr's own spelling: the keyword matcher
+    // already maps "kernel" to OpenCL's DeviceKernelAttr (Attr.td says why).
+    if (Kind == tok::kw_kernel)
+      AttrName = PP.getIdentifierInfo("metal_kernel");
     SourceLocation AttrNameLoc = ConsumeToken();
     attrs.addNew(AttrName, AttrNameLoc, AttributeScopeInfo(), nullptr, 0,
                  Kind);
@@ -4245,6 +4249,7 @@ void Parser::ParseDeclarationSpecifiers(
     // Metal single token adornments.
     case tok::kw_vertex:
     case tok::kw_fragment:
+    case tok::kw_kernel:
       ParseMetalFunctionQualifiers(DS.getAttributes());
       continue;
 

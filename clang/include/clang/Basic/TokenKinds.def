@@ -677,6 +677,14 @@ TYPE_TRAIT_1(__builtin_hlsl_is_typed_resource_element_compatible, IsTypedResourc
 // Function qualifiers.
 KEYWORD(vertex                      , KEYMETAL)
 KEYWORD(fragment                    , KEYMETAL)
+// `kernel` is a KEYWORD here, not an alias onto OpenCL's __kernel: the OpenCL
+// spelling is DeviceKernelAttr (a calling-convention attribute whose Sema path
+// is OpenCL/CUDA/SYCL-shaped), while a Metal compute entry is the third Metal
+// entry kind beside vertex/fragment (MetalKernelAttr; CGMetalRuntime emits the
+// GLCompute wrapper). Disjoint language flags keep the two "kernel" spellings
+// from meeting in the identifier table (IdentifierTable::AddKeyword skips the
+// disabled one).
+KEYWORD(kernel                      , KEYMETAL)
 // Address space qualifiers, aliased onto the OpenCL address-space keywords so
 // the whole parse/Sema path is reused ("constant" reuses the OpenCL alias
 // above, extended with KEYMETAL).

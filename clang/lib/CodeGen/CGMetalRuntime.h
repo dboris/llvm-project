@@ -47,6 +47,7 @@ namespace clang {
 class FunctionDecl;
 class ParmVarDecl;
 class ArraySubscriptExpr;
+class CallExpr;
 class CXXMemberCallExpr;
 class CXXOperatorCallExpr;
 
@@ -58,8 +59,24 @@ class CGMetalRuntime {
 public:
   CGMetalRuntime(CodeGenModule &CGM) : CGM(CGM) {}
 
-  /// Emit the void() entry wrapper for a vertex/fragment-qualified function.
+  /// True if FD is a Metal entry point: vertex-, fragment- or
+  /// kernel-qualified. Every other function is shader-internal.
+  static bool isEntryFunction(const FunctionDecl *FD);
+
+  /// Emit the void() entry wrapper for a vertex/fragment/kernel-qualified
+  /// function. Kernels become GLCompute entries: [[buffer(N)]] in descriptor
+  /// set 0 (the compute set; same offsets as the render stages), the
+  /// thread-position parameters loaded from the compute BuiltIns, and
+  /// `hlsl.numthreads` = 1,1,1 -- a PLACEHOLDER LocalSize that the WinCatalyst
+  /// Metal runtime rewrites per dispatch (Metal picks threadsPerThreadgroup at
+  /// dispatch time; Vulkan wants it in the module), see <Metal/MTLLibrary.h>.
   void emitEntryFunction(const FunctionDecl *FD, llvm::Function *Fn);
+
+  /// metal::threadgroup_barrier(mem_flags) -> OpControlBarrier(Workgroup,
+  /// Workgroup, AcquireRelease | the storage-class bits the flags name).
+  /// Returns std::nullopt when E is some other call.
+  std::optional<RValue> tryEmitThreadgroupBarrier(CodeGenFunction &CGF,
+                                                  const CallExpr *E);
 
   /// True if PD is a [[buffer(N)]] parameter of a Metal entry function.
   static bool isBufferParam(const ParmVarDecl *PD);
@@ -138,7 +155,8 @@ private:
                                     llvm::Type *ElemLLVMTy);
 
   /// The descriptor set for the stage of the given entry function
-  /// (0 = vertex, 1 = fragment).
+  /// (0 = vertex, 1 = fragment, 0 = kernel -- the compute pipeline layout has
+  /// the one set).
   static unsigned stageDescriptorSet(const FunctionDecl *FD);
 };
 
