@@ -3603,6 +3603,25 @@ void mergeInheritableAttributes(ASTReader &Reader, Decl *D, Decl *Previous) {
     NewAttr->setInherited(true);
     D->addAttr(NewAttr);
   }
+
+  // Harmony: swift_attr. A header that is not part of any module (glibc's, on
+  // Linux) is parsed again into every module that includes it, so each module
+  // carries its own copy of, e.g., `extern FILE *stdout;`. A redeclaration that
+  // adds `__attribute__((swift_attr("nonisolated(unsafe)")))` in ONE module
+  // (Swift's SwiftGlibc.h) was lost whenever another module's copy became the
+  // most recent declaration, and that is the declaration the Swift importer
+  // reads attributes from. Inherit each attribute string the declaration does
+  // not already carry, as a redeclaration in the same translation unit would.
+  for (const auto *SA : Previous->specific_attrs<SwiftAttrAttr>()) {
+    if (llvm::any_of(D->specific_attrs<SwiftAttrAttr>(),
+                     [&](const SwiftAttrAttr *Own) {
+                       return Own->getAttribute() == SA->getAttribute();
+                     }))
+      continue;
+    NewAttr = SA->clone(Context);
+    NewAttr->setInherited(true);
+    D->addAttr(NewAttr);
+  }
 }
 } // namespace
 
