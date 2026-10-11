@@ -15,6 +15,8 @@
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/InstVisitor.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsSPIRV.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -51,6 +53,27 @@ char SPIRVRegularizer::ID = 0;
 INITIALIZE_PASS(SPIRVRegularizer, DEBUG_TYPE, "SPIR-V Regularizer", false,
                 false)
 
+// Harmony: where code may be appended to the end of BB -- before its terminator
+// AND before the spv_selection_merge / spv_loop_merge the structurizer placed in
+// front of that terminator. This pass runs after the structurizer, and a merge
+// instruction must immediately precede its branch (SPIR-V 2.11): a lowered
+// constant expression inserted before the bare terminator split them, and
+// spirv-val rejects the module ("OpSelectionMerge must immediately precede
+// either an OpBranchConditional or OpSwitch instruction"); the NVIDIA driver
+// crashed on one at pipeline creation (win-catalyst lessons #905, #939).
+static Instruction *getEndInsertionPoint(BasicBlock &BB) {
+  Instruction *InsPoint = BB.getTerminator();
+  if (!InsPoint)
+    return &BB.back();
+  while (auto *Prev = dyn_cast_or_null<IntrinsicInst>(InsPoint->getPrevNode())) {
+    if (Prev->getIntrinsicID() != Intrinsic::spv_selection_merge &&
+        Prev->getIntrinsicID() != Intrinsic::spv_loop_merge)
+      break;
+    InsPoint = Prev;
+  }
+  return InsPoint;
+}
+
 // Since SPIR-V cannot represent constant expression, constant expressions
 // in LLVM IR need to be lowered to instructions. For each function,
 // the constant expressions used by instructions of the function are replaced
@@ -75,7 +98,10 @@ void SPIRVRegularizer::runLowerConstExpr(Function &F) {
       auto *CE = cast<ConstantExpr>(V);
       LLVM_DEBUG(dbgs() << "[lowerConstantExpressions] " << *CE);
       auto ReplInst = CE->getAsInstruction();
-      auto InsPoint = II->getParent() == &*FBegin ? II : &FBegin->back();
+      // (the entry block's own terminator: its merge, if any, must stay next to it)
+      auto InsPoint = II->getParent() == &*FBegin && !II->isTerminator()
+                          ? II
+                          : getEndInsertionPoint(*FBegin);
       ReplInst->insertBefore(InsPoint->getIterator());
       LLVM_DEBUG(dbgs() << " -> " << *ReplInst << '\n');
       std::vector<Instruction *> Users;
@@ -113,7 +139,7 @@ void SPIRVRegularizer::runLowerConstExpr(Function &F) {
         unsigned Idx = 0;
         auto *PhiII = dyn_cast<PHINode>(II);
         Instruction *InsPoint =
-            PhiII ? &PhiII->getIncomingBlock(NumOfOp)->back() : II;
+            PhiII ? getEndInsertionPoint(*PhiII->getIncomingBlock(NumOfOp)) : II;
         std::list<Instruction *> ReplList;
         for (auto V : OpList) {
           if (auto *Inst = dyn_cast<Instruction>(V))
